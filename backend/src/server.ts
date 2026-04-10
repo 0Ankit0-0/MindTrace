@@ -1,7 +1,6 @@
 import app from "./app";
+import { env } from "./config/env";
 
-const port = Number(process.env.PORT || 4000);
-
-app.listen(port, () => {
-  console.log(`MindTrace backend running on http://localhost:${port}`);
+app.listen(env.port, () => {
+  console.log(`MindTrace backend running on http://localhost:${env.port}`);
 });

@@ -10,7 +10,10 @@ export const analyzeSchema = z.object({
 export const analyze = (req: Request, res: Response, next: NextFunction): void => {
   try {
     const result = analyzeMindState(req.body);
-    res.json(result);
+    res.json({
+      success: true,
+      data: result,
+    });
   } catch (error) {
     next(error);
   }

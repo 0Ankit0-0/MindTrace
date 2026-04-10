@@ -1,9 +1,9 @@
-import type { AuthUser } from "./auth";
+import type { AppUser } from "./auth";
 
 declare global {
   namespace Express {
     interface Request {
-      user?: AuthUser;
+      user?: AppUser;
     }
   }
 }

@@ -9,7 +9,10 @@ export const studyPlan = (req: Request, res: Response, next: NextFunction): void
     }
 
     const result = getStudyPlan(req.user.id);
-    res.json(result);
+    res.json({
+      success: true,
+      data: result,
+    });
   } catch (error) {
     next(error);
   }

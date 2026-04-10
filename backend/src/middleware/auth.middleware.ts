@@ -1,12 +1,12 @@
 import { NextFunction, Request, Response } from "express";
-import { verifyToken } from "../utils/jwt";
+import { verifyToken } from "../config/jwt";
 import { getUserById } from "../services/auth.service";
 
 export const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
   const authorization = req.headers.authorization;
 
   if (!authorization?.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({ success: false, message: "Authentication required" });
     return;
   }
 
@@ -17,13 +17,13 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
     const user = getUserById(payload.id);
 
     if (!user) {
-      res.status(401).json({ error: "Invalid token" });
+      res.status(401).json({ success: false, message: "Invalid token" });
       return;
     }
 
     req.user = user;
     next();
   } catch {
-    res.status(401).json({ error: "Invalid token" });
+    res.status(401).json({ success: false, message: "Invalid token" });
   }
 };

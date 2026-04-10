@@ -20,7 +20,10 @@ export const addCheckin = (req: Request, res: Response, next: NextFunction): voi
       sleep: req.body.sleep,
     });
 
-    res.status(201).json(checkin);
+    res.status(201).json({
+      success: true,
+      data: checkin,
+    });
   } catch (error) {
     next(error);
   }
@@ -33,7 +36,10 @@ export const history = (req: Request, res: Response, next: NextFunction): void =
     }
 
     const checkins = getCheckinHistory(req.user.id);
-    res.json({ checkins });
+    res.json({
+      success: true,
+      data: { checkins },
+    });
   } catch (error) {
     next(error);
   }

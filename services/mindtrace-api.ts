@@ -35,6 +35,12 @@ export type StudyPlanResponse = {
   plan: string[];
 };
 
+type ApiEnvelope<T> = {
+  success: boolean;
+  data?: T;
+  message?: string;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -74,7 +80,7 @@ export const getApiBaseUrl = () => {
 
 type RequestOptions = {
   body?: unknown;
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT';
   token?: string;
 };
 
@@ -99,6 +105,16 @@ const request = async <T>(path: string, options: RequestOptions = {}): Promise<T
 
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
+
+  if (data && typeof data.success === 'boolean') {
+    const envelope = data as ApiEnvelope<T>;
+
+    if (!envelope.success) {
+      throw new ApiError(envelope.message || 'Request failed', response.status);
+    }
+
+    return envelope.data as T;
+  }
 
   if (!response.ok) {
     throw new ApiError(data?.error || 'Request failed', response.status);
@@ -145,4 +161,40 @@ export const analyze = (payload: { mood: string; sleep: number }) =>
 export const getStudyPlan = (token: string) =>
   request<StudyPlanResponse>('/study-plan', {
     token,
+  });
+
+export const updateProfile = (
+  token: string,
+  payload: { name: string; age: number; gender: string },
+) =>
+  request<ApiUser & {
+    age: number | null;
+    gender: string | null;
+    onboardingCompleted: boolean;
+    goals: string | null;
+    stressLevel: string | null;
+    studyHours: number | null;
+    createdAt: string;
+  }>('/profile/me', {
+    method: 'PUT',
+    token,
+    body: payload,
+  });
+
+export const updateOnboarding = (
+  token: string,
+  payload: { goals: string; stressLevel: string; studyHours: number },
+) =>
+  request<ApiUser & {
+    age: number | null;
+    gender: string | null;
+    onboardingCompleted: boolean;
+    goals: string | null;
+    stressLevel: string | null;
+    studyHours: number | null;
+    createdAt: string;
+  }>('/onboarding', {
+    method: 'PUT',
+    token,
+    body: payload,
   });
