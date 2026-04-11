@@ -19,6 +19,7 @@ export interface AnalyzeSessionResult {
   sessionId: number;
   stressScore: number;
   state: StressResult["state"];
+  reason: string;
   insight: string;
   recommendation: string;
   drift: SessionDriftResult;
@@ -82,7 +83,7 @@ export const analyzeSession = (userId: number, input: AnalyzeSessionInput): Anal
     avgResponseTime: drift.avgResponseTime,
     baselineAccuracy: baseline.baselineAccuracy,
     baselineResponseTime: baseline.baselineResponseTime,
-    driftDetected: drift.driftDetected,
+    drift,
   });
   const previousStressScore = getPreviousStressScore(userId);
 
@@ -105,18 +106,15 @@ export const analyzeSession = (userId: number, input: AnalyzeSessionInput): Anal
 
   updateBaseline(userId, drift.accuracy, drift.avgResponseTime);
 
-  const insight = drift.driftDetected
-    ? "Cognitive fatigue detected"
-    : stress.state === "stable" && stress.stressScore <= 45
-      ? "Low stress and stable performance detected"
-      : "Session pattern is stable";
+  const insight = stress.reason;
 
   return {
     sessionId: Number(result.lastInsertRowid),
     stressScore: stress.stressScore,
     state: stress.state,
+    reason: stress.reason,
     insight,
-    recommendation: getStressRecommendation(stress.state, drift.driftDetected),
+    recommendation: getStressRecommendation(stress.state, drift),
     drift,
     components: stress.components,
     signals: stress.signals,

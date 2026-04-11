@@ -1,4 +1,16 @@
-import { AffectiveState, TestAnswer, TestDifficulty, TestTopic, testTopicMeta } from '@/constants/DummyData';
+import {
+  AffectiveState,
+  TestAnswer,
+  TestDifficulty,
+  TestTopic,
+  testQuestionBank,
+  testTopicMeta,
+} from '@/constants/DummyData';
+
+export type AiRecommendationPayload = {
+  weakTopics: string[];
+  recentMistakes: string[];
+};
 
 export const calculateTestResults = (
   answers: TestAnswer[],
@@ -143,4 +155,41 @@ export const generateTestStudyRecommendations = (
         : approachByState[affectiveState],
     duration,
   }));
+};
+
+export const buildAiRecommendationPayload = (answers: TestAnswer[]): AiRecommendationPayload => {
+  const wrongAnswers = answers.filter((answer) => !answer.correct);
+  const weakTopicCounts = new Map<string, number>();
+
+  wrongAnswers.forEach((answer) => {
+    const label = testTopicMeta[answer.topic].label;
+    weakTopicCounts.set(label, (weakTopicCounts.get(label) || 0) + 1);
+  });
+
+  const weakTopics = Array.from(weakTopicCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
+    .map(([topic]) => topic);
+
+  const recentMistakes = wrongAnswers.slice(-5).map((answer) => {
+    const question = testQuestionBank.find((item) => item.id === answer.questionId);
+    const label = testTopicMeta[answer.topic].label;
+    const primaryTags = question?.tags?.slice(0, 2).map((tag) =>
+      tag
+        .split(/[-_]+/)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ')
+    );
+
+    if (primaryTags?.length) {
+      return `${label}: ${primaryTags.join(', ')}`;
+    }
+
+    return `${label}: ${question?.question || 'Concept review needed'}`;
+  });
+
+  return {
+    weakTopics,
+    recentMistakes,
+  };
 };

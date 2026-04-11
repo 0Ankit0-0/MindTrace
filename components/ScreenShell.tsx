@@ -15,9 +15,10 @@ export function ScreenShell({
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
         contentContainerStyle={[styles.content, padded && styles.padded]}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View>{children}</View>
+        <View style={styles.inner}>{children}</View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -29,7 +30,11 @@ const styles = StyleSheet.create({
     backgroundColor: palette.mist,
   },
   content: {
+    flexGrow: 1,
     paddingBottom: 100,
+  },
+  inner: {
+    flex: 1,
   },
   padded: {
     paddingHorizontal: spacing.lg,

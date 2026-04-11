@@ -39,6 +39,7 @@ export type AnalyzeSessionResponse = {
   sessionId: number;
   stressScore: number;
   state: 'stable' | 'declining' | 'critical';
+  reason: string;
   insight: string;
   recommendation: string;
   drift: {
@@ -48,11 +49,19 @@ export type AnalyzeSessionResponse = {
     secondHalfAccuracy: number;
     firstHalfResponseTime: number;
     secondHalfResponseTime: number;
+    firstHalfMistakeRate: number;
+    secondHalfMistakeRate: number;
     driftDetected: boolean;
+    driftSeverity: 'none' | 'mild' | 'strong';
     accuracyDrop: number;
     responseTimeIncrease: number;
+    mistakeFrequencyIncrease: number;
+    longestWrongStreak: number;
   };
   components: {
+    pulse: number;
+    behavior: number;
+    cognitiveDrift: number;
     mood: number;
     behavioral: number;
     drift: number;
@@ -78,6 +87,13 @@ export type BrainDumpInsightsResponse = {
   stressSignals: string[];
   affectiveState: 'curiosity' | 'confusion' | 'frustration' | 'boredom';
   suggestedAction: string;
+  fallbackUsed: boolean;
+  provider: 'gemini' | 'local';
+};
+
+export type AiRecommendationResponse = {
+  suggestions: string[];
+  explanation: string;
   fallbackUsed: boolean;
   provider: 'gemini' | 'local';
 };
@@ -276,6 +292,8 @@ export const getAiChatReply = (
     affectiveState?: string;
     stressScore?: number;
     name?: string;
+    weakTopics?: string[];
+    recentMistakes?: string[];
   },
 ) =>
   request<AiChatResponse>('/ai/chat', {
@@ -289,6 +307,16 @@ export const analyzeBrainDump = (
   payload: { text: string; mood?: string; sleep?: number },
 ) =>
   request<BrainDumpInsightsResponse>('/ai/brain-dump', {
+    method: 'POST',
+    token,
+    body: payload,
+  });
+
+export const getAiRecommendations = (
+  token: string,
+  payload: { weakTopics: string[]; recentMistakes: string[] },
+) =>
+  request<AiRecommendationResponse>('/ai/recommend', {
     method: 'POST',
     token,
     body: payload,

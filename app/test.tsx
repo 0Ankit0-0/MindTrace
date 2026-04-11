@@ -1,7 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Switch, View } from 'react-native';
-import { Circle, Svg } from 'react-native-svg';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Switch, View, useWindowDimensions } from 'react-native';
 import { Button, Snackbar, Surface, Text } from 'react-native-paper';
 
 import { AppHeader } from '@/components/AppHeader';
@@ -11,1110 +10,409 @@ import { SectionHeader } from '@/components/SectionHeader';
 import { TestDifficulty, TestQuestion, TestTopic, testQuestionBank, testTopicMeta } from '@/constants/DummyData';
 import { palette, radii, shadows, spacing } from '@/constants/theme';
 import { useMindTrace } from '@/hooks/useMindTrace';
-import { getAdaptiveDifficulty } from '@/services/mindtrace-engine';
 import { calculateTestResults, generateTestStudyRecommendations } from '@/services/test-analytics';
 
 type ScreenState = 'home' | 'config' | 'active' | 'results';
 
-const DIFF_ORDER: TestDifficulty[] = ['easy', 'medium', 'hard'];
+const DIFFICULTIES: TestDifficulty[] = ['easy', 'medium', 'hard'];
+const COUNT_OPTIONS = [5, 10, 15, 20];
 
-const diffPillStyle = (diff: TestDifficulty, active: boolean) => ({
-  backgroundColor: active
-    ? diff === 'easy'
-      ? palette.primaryMuted
-      : diff === 'medium'
-        ? palette.warningMuted
-        : palette.dangerMuted
-    : palette.mist,
-  borderColor: active
-    ? diff === 'easy'
-      ? palette.primary
-      : diff === 'medium'
-        ? '#1A5C38'
-        : palette.danger
-    : palette.border,
-  borderRadius: radii.pill,
-  borderWidth: 1,
-  paddingHorizontal: 18,
-  paddingVertical: 8,
-});
-
-const diffPillTextColor = (diff: TestDifficulty, active: boolean) => {
-  if (!active) return palette.slate;
-  if (diff === 'easy') return palette.primary;
-  if (diff === 'medium') return '#1A5C38';
-  return palette.danger;
+const shuffle = <T,>(items: T[]) => {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
 };
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]] as [T, T];
-  }
-  return a;
-}
+const getPool = (topic: TestTopic | 'mixed' | null, difficulty: TestDifficulty) =>
+  testQuestionBank.filter(
+    (question) => question.difficulty === difficulty && (topic === 'mixed' || topic === null || question.topic === topic)
+  );
 
 export default function TestScreen() {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 720;
   const {
     affectiveState,
     gamificationStatus,
     isAnalyzingSession,
+    latestAiRecommendations,
     latestSessionAnalysis,
-    syncError,
-    stressScore,
     startTest,
     submitTestAnswer,
     finishTest,
+    stressScore,
+    syncError,
     testHistory,
   } = useMindTrace();
-
   const [screenState, setScreenState] = useState<ScreenState>('home');
   const [selectedTopic, setSelectedTopic] = useState<TestTopic | 'mixed' | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<TestDifficulty>(
-    stressScore > 65 ? 'easy' : stressScore > 40 ? 'medium' : 'hard'
+    stressScore >= 70 ? 'easy' : stressScore >= 50 ? 'medium' : 'hard'
   );
-  const [questionCount, setQuestionCount] = useState(10);
-  const [adaptiveMode, setAdaptiveMode] = useState(true);
-
-  // Active state
+  const [questionCount, setQuestionCount] = useState(5);
+  const [adaptiveInsights, setAdaptiveInsights] = useState(true);
+  const [questionQueue, setQuestionQueue] = useState<TestQuestion[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [currentDifficulty, setCurrentDifficulty] = useState<TestDifficulty>(selectedDifficulty);
-  const [consecutiveWrong, setConsecutiveWrong] = useState(0);
-  const [consecutiveCorrect, setConsecutiveCorrect] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [answered, setAnswered] = useState(false);
-  const [adaptationToast, setAdaptationToast] = useState<string | null>(null);
-  const [totalElapsed, setTotalElapsed] = useState(0);
-  const [questionStartTime, setQuestionStartTime] = useState(0);
-  const [questionQueue, setQuestionQueue] = useState<TestQuestion[]>([]);
-
-  // Results state
+  const [questionStartTime, setQuestionStartTime] = useState(Date.now());
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [showAnswers, setShowAnswers] = useState(false);
-  const [expandedAnswerId, setExpandedAnswerId] = useState<string | null>(null);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
 
-  // Timer
+  const availableQuestions = useMemo(() => getPool(selectedTopic, selectedDifficulty), [selectedDifficulty, selectedTopic]);
+  const countOptions = COUNT_OPTIONS.filter((count) => count <= availableQuestions.length);
+  const lockedQuestionCount = countOptions.includes(questionCount) ? questionCount : countOptions[countOptions.length - 1] ?? 0;
+  const currentQuestion = questionQueue[currentQuestionIndex];
+  const latestSession = testHistory[0];
+
   useEffect(() => {
-    if (screenState !== 'active') return;
-    const interval = setInterval(() => setTotalElapsed((s) => s + 1), 1000);
-    return () => clearInterval(interval);
+    if (screenState !== 'active') {
+      return undefined;
+    }
+    const timer = setInterval(() => setElapsedSeconds((current) => current + 1), 1000);
+    return () => clearInterval(timer);
   }, [screenState]);
 
-  // Build question queue
   useEffect(() => {
-    if (screenState !== 'active' || !selectedTopic) return;
+    if (countOptions.length && !countOptions.includes(questionCount)) {
+      setQuestionCount(countOptions[countOptions.length - 1]);
+    }
+  }, [countOptions, questionCount]);
 
-    const filtered =
-      selectedTopic === 'mixed'
-        ? [...testQuestionBank]
-        : testQuestionBank.filter((q) => q.topic === selectedTopic);
-
-    const byDiff: Record<TestDifficulty, TestQuestion[]> = { easy: [], medium: [], hard: [] };
-    filtered.forEach((q) => byDiff[q.difficulty].push(q));
-
-    const shuffled = {
-      easy: shuffle(byDiff.easy),
-      medium: shuffle(byDiff.medium),
-      hard: shuffle(byDiff.hard),
-    };
-
-    const mainCount = Math.ceil(questionCount * 0.6);
-    const otherCount = questionCount - mainCount;
-    const others = DIFF_ORDER.filter((d) => d !== selectedDifficulty);
-    const perOther = Math.ceil(otherCount / Math.max(others.length, 1));
-
-    const queue: TestQuestion[] = [
-      ...shuffled[selectedDifficulty].slice(0, mainCount),
-      ...others.flatMap((d) => shuffled[d].slice(0, perOther)),
-    ];
-
-    setQuestionQueue(queue.slice(0, questionCount));
+  const beginTest = () => {
+    if (!selectedTopic || !countOptions.length) {
+      return;
+    }
+    const queue = shuffle(getPool(selectedTopic, selectedDifficulty)).slice(0, lockedQuestionCount);
+    startTest(selectedTopic, selectedDifficulty, queue.length, adaptiveInsights);
+    setQuestionQueue(queue);
     setCurrentQuestionIndex(0);
-    setCurrentDifficulty(selectedDifficulty);
-    setConsecutiveWrong(0);
-    setConsecutiveCorrect(0);
     setSelectedAnswer(null);
     setAnswered(false);
-    setTotalElapsed(0);
     setQuestionStartTime(Date.now());
-  }, [screenState, selectedTopic, selectedDifficulty, questionCount]);
-
-  // Adaptation toast clear
-  useEffect(() => {
-    if (!adaptationToast) return;
-    const t = setTimeout(() => setAdaptationToast(null), 2000);
-    return () => clearTimeout(t);
-  }, [adaptationToast]);
-
-  const currentQuestion = questionQueue[currentQuestionIndex];
+    setElapsedSeconds(0);
+    setScreenState('active');
+  };
 
   const handleAnswer = (optionIndex: number) => {
-    if (answered || !currentQuestion) return;
-
+    if (!currentQuestion || answered) {
+      return;
+    }
     setSelectedAnswer(optionIndex);
     setAnswered(true);
-
-    const timeTaken = Math.round((Date.now() - questionStartTime) / 1000);
-    submitTestAnswer(currentQuestion.id, optionIndex, timeTaken);
-
-    const correct = optionIndex === currentQuestion.correctIndex;
-    const newConsecWrong = correct ? 0 : consecutiveWrong + 1;
-    const newConsecCorrect = correct ? consecutiveCorrect + 1 : 0;
-
-    setConsecutiveWrong(newConsecWrong);
-    setConsecutiveCorrect(newConsecCorrect);
-
-    if (adaptiveMode) {
-      const { newDifficulty, event } = getAdaptiveDifficulty(
-        currentDifficulty,
-        newConsecWrong,
-        newConsecCorrect
-      );
-      if (event) {
-        const toastMsg =
-          event === 'three_wrong'
-            ? `Adapting to ${newDifficulty} — let's rebuild momentum.`
-            : `Great streak! Moving to ${newDifficulty} questions.`;
-        setAdaptationToast(toastMsg);
-        setCurrentDifficulty(newDifficulty);
-      }
-    }
-
+    const timeTakenSeconds = Math.max(1, Math.round((Date.now() - questionStartTime) / 1000));
+    submitTestAnswer(currentQuestion.id, optionIndex, timeTakenSeconds);
     setTimeout(() => {
-      if (currentQuestionIndex < questionQueue.length - 1) {
-        setCurrentQuestionIndex((i) => i + 1);
-        setSelectedAnswer(null);
-        setAnswered(false);
-        setQuestionStartTime(Date.now());
-      } else {
+      if (currentQuestionIndex >= questionQueue.length - 1) {
         finishTest();
         setScreenState('results');
+        return;
       }
-    }, 1200);
+      setCurrentQuestionIndex((current) => current + 1);
+      setSelectedAnswer(null);
+      setAnswered(false);
+      setQuestionStartTime(Date.now());
+    }, 800);
   };
 
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
+  const metricWrap = [styles.metricWrap, isWide && styles.metricWrapWide];
 
-  // ── Home screen ──────────────────────────────────────────────────────────
-  const renderHome = () => (
-    <>
-      <AppHeader
-        eyebrow="Test"
-        title="Adaptive Quiz"
-        subtitle="Questions that learn from you in real time"
-      />
-
-      {stressScore > 60 || affectiveState === 'frustration' ? (
-        <Surface style={styles.moodBanner}>
-          <View style={styles.moodBannerRow}>
-            <Ionicons color={palette.primary} name="leaf-outline" size={20} />
-            <Text style={styles.moodBannerText}>
-              Your current state is {affectiveState} — we will start with easier questions today.
-            </Text>
-          </View>
-        </Surface>
-      ) : null}
-
-      <SectionHeader title="Pick a topic" />
-
-      <View style={styles.topicGrid}>
-        {(Object.keys(testTopicMeta) as TestTopic[]).map((topic) => {
-          const meta = testTopicMeta[topic];
-          return (
-            <Pressable
-              key={topic}
-              onPress={() => {
-                setSelectedTopic(topic);
-                setScreenState('config');
-              }}
-              style={styles.topicCard}
-            >
-              <Ionicons color={palette.primary} name={meta.icon as 'git-branch-outline'} size={24} />
-              <Text style={styles.topicLabel}>{meta.label}</Text>
-              <Text style={styles.topicDesc}>{meta.description}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      <Button
-        mode="outlined"
-        onPress={() => {
-          setSelectedTopic('mixed');
-          setScreenState('config');
-        }}
-        style={styles.mixedButton}
-      >
-        Quick Random Mix
-      </Button>
-    </>
-  );
-
-  // ── Config screen ────────────────────────────────────────────────────────
-  const renderConfig = () => {
-    const topicKey = selectedTopic && selectedTopic !== 'mixed' ? selectedTopic : null;
-    const meta = topicKey ? testTopicMeta[topicKey] : null;
+  if (screenState === 'home') {
     return (
-    <>
-      <Pressable onPress={() => setScreenState('home')} style={styles.backRow}>
-        <Ionicons color={palette.primary} name="arrow-back-outline" size={20} />
-        <Text style={styles.backText}>Back</Text>
-      </Pressable>
-
-      <Text style={styles.configTitle}>{meta ? meta.label : 'Mixed Topics'}</Text>
-      {meta ? <Text style={styles.configDesc}>{meta.description}</Text> : null}
-
-      <Text style={styles.configSectionLabel}>Difficulty</Text>
-      <View style={styles.pillRow}>
-        {DIFF_ORDER.map((d) => (
-          <Pressable key={d} onPress={() => setSelectedDifficulty(d)} style={diffPillStyle(d, selectedDifficulty === d)}>
-            <Text style={{ color: diffPillTextColor(d, selectedDifficulty === d), fontWeight: '700', textTransform: 'capitalize' }}>
-              {d}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <Text style={styles.configSectionLabel}>Questions</Text>
-      <View style={styles.pillRow}>
-        {[5, 10, 15, 20].map((n) => (
-          <Pressable
-            key={n}
-            onPress={() => setQuestionCount(n)}
-            style={[styles.countPill, questionCount === n && styles.countPillActive]}
-          >
-            <Text style={[styles.countPillText, questionCount === n && styles.countPillTextActive]}>{n}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <View style={styles.adaptiveRow}>
-        <View style={styles.adaptiveLeft}>
-          <Text style={styles.adaptiveLabel}>Adaptive Mode</Text>
-          <Text style={styles.adaptiveHelper}>Difficulty adjusts based on your answers</Text>
+      <ScreenShell>
+        <AppHeader eyebrow="Test" title="Stable Quiz Flow" subtitle="Difficulty and question count lock before the test starts." />
+        {(stressScore >= 60 || affectiveState === 'frustration') && (
+          <Surface style={styles.banner}>
+            <Ionicons color={palette.primary} name="leaf-outline" size={18} />
+            <Text style={styles.bannerText}>You look a bit strained. Starting easier will produce cleaner results.</Text>
+          </Surface>
+        )}
+        <SectionHeader title="Choose a topic" />
+        <View style={styles.grid}>
+          {(Object.keys(testTopicMeta) as TestTopic[]).map((topic) => (
+            <Pressable key={topic} onPress={() => { setSelectedTopic(topic); setScreenState('config'); }} style={styles.topicCard}>
+              <Ionicons color={palette.primary} name={testTopicMeta[topic].icon as keyof typeof Ionicons.glyphMap} size={20} />
+              <Text style={styles.topicTitle}>{testTopicMeta[topic].label}</Text>
+              <Text style={styles.muted}>{testTopicMeta[topic].description}</Text>
+            </Pressable>
+          ))}
         </View>
-        <Switch
-          onValueChange={setAdaptiveMode}
-          trackColor={{ true: palette.primary }}
-          value={adaptiveMode}
-        />
-      </View>
-
-      <Button
-        mode="contained"
-        onPress={() => {
-          if (!selectedTopic) return;
-          startTest(selectedTopic, selectedDifficulty, questionCount, adaptiveMode);
-          setScreenState('active');
-        }}
-        style={styles.startButton}
-      >
-        Start Test
-      </Button>
-    </>
+        <Button mode="outlined" onPress={() => { setSelectedTopic('mixed'); setScreenState('config'); }} style={styles.topButton}>
+          Mixed Mock Test
+        </Button>
+      </ScreenShell>
     );
-  };
+  }
 
-  // ── Active screen ────────────────────────────────────────────────────────
-  const renderActive = () => {
-    if (!currentQuestion) return null;
-    const progress = (currentQuestionIndex / Math.max(questionQueue.length, 1)) * 100;
-    const optionLabels = ['A', 'B', 'C', 'D'] as const;
-
+  if (screenState === 'config') {
     return (
-    <>
-      {/* Top bar */}
-      <View style={styles.activeTopBar}>
-        <Text style={styles.progressText}>
-          {currentQuestionIndex + 1}/{questionQueue.length}
-        </Text>
-        <View style={[styles.diffBadge, {
-          backgroundColor: currentDifficulty === 'easy' ? palette.primaryMuted : currentDifficulty === 'medium' ? palette.warningMuted : palette.dangerMuted,
-        }]}>
-          <Text style={[styles.diffBadgeText, {
-            color: currentDifficulty === 'easy' ? palette.primary : currentDifficulty === 'medium' ? '#1A5C38' : palette.danger,
-          }]}>
-            {currentDifficulty.toUpperCase()}
+      <ScreenShell>
+        <Pressable onPress={() => setScreenState('home')} style={styles.backRow}>
+          <Ionicons color={palette.primary} name="arrow-back-outline" size={18} />
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+        <Surface style={styles.card}>
+          <Text style={styles.titleText}>
+            {selectedTopic === 'mixed' ? 'Mixed Topics' : selectedTopic ? testTopicMeta[selectedTopic].label : 'Topic'}
           </Text>
-        </View>
-        <Text style={styles.timerText}>{formatTime(totalElapsed)}</Text>
-      </View>
-
-      {/* Progress bar */}
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${progress}%` }]} />
-      </View>
-
-      {/* Adaptation toast */}
-      {adaptationToast ? (
-        <View style={styles.adaptationToast}>
-          <Text style={styles.adaptationToastText}>{adaptationToast}</Text>
-        </View>
-      ) : null}
-
-      {/* Question card */}
-      <Surface style={styles.questionCard}>
-        <Text style={styles.questionText}>{currentQuestion.question}</Text>
-
-        {currentQuestion.options.map((option, idx) => {
-          let bg = palette.mist;
-          let border = palette.border;
-          if (answered) {
-            if (idx === currentQuestion.correctIndex) {
-              bg = palette.primaryMuted;
-              border = palette.primary;
-            } else if (idx === selectedAnswer && idx !== currentQuestion.correctIndex) {
-              bg = palette.dangerMuted;
-              border = palette.danger;
-            }
-          }
-          return (
-            <Pressable
-              key={idx}
-              onPress={() => handleAnswer(idx)}
-              style={[styles.optionItem, { backgroundColor: bg, borderColor: border }]}
-            >
-              <View style={[styles.optionBadge, {
-                backgroundColor: answered && idx === currentQuestion.correctIndex
-                  ? palette.primary
-                  : answered && idx === selectedAnswer
-                    ? palette.danger
-                    : palette.border,
-              }]}>
-                <Text style={styles.optionBadgeText}>{optionLabels[idx]}</Text>
-              </View>
-              <Text style={styles.optionText}>{option}</Text>
-            </Pressable>
-          );
-        })}
-
-        {answered ? (
-          <View style={styles.explanationBox}>
-            <Text style={styles.explanationText}>{currentQuestion.explanation}</Text>
+          <Text style={styles.muted}>
+            {selectedTopic === 'mixed'
+              ? 'Fixed-difficulty questions pulled from multiple topics.'
+              : selectedTopic
+                ? testTopicMeta[selectedTopic].description
+                : 'Choose a topic.'}
+          </Text>
+          <Text style={styles.sectionLabel}>Difficulty</Text>
+          <View style={styles.rowWrap}>
+            {DIFFICULTIES.map((difficulty) => (
+              <Pressable
+                key={difficulty}
+                onPress={() => setSelectedDifficulty(difficulty)}
+                style={[styles.pill, selectedDifficulty === difficulty && styles.pillActive]}
+              >
+                <Text style={[styles.pillText, selectedDifficulty === difficulty && styles.pillTextActive]}>{difficulty}</Text>
+              </Pressable>
+            ))}
           </View>
-        ) : null}
+          <Text style={styles.sectionLabel}>Question Count</Text>
+          <View style={styles.rowWrap}>
+            {countOptions.map((count) => (
+              <Pressable key={count} onPress={() => setQuestionCount(count)} style={[styles.pill, lockedQuestionCount === count && styles.pillActive]}>
+                <Text style={[styles.pillText, lockedQuestionCount === count && styles.pillTextActive]}>{count}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.muted}>{availableQuestions.length} questions available at this locked difficulty.</Text>
+          <View style={styles.switchRow}>
+            <View style={styles.switchCopy}>
+              <Text style={styles.switchTitle}>Adaptive AI coaching</Text>
+              <Text style={styles.muted}>Shift uses your mistakes after the test. It does not change live difficulty.</Text>
+            </View>
+            <Switch onValueChange={setAdaptiveInsights} trackColor={{ true: palette.primary }} value={adaptiveInsights} />
+          </View>
+          <Button disabled={!selectedTopic || !countOptions.length} mode="contained" onPress={beginTest} style={styles.topButton}>
+            Start Fixed Test
+          </Button>
+        </Surface>
+      </ScreenShell>
+    );
+  }
+
+  if (screenState === 'active' && currentQuestion) {
+    return (
+      <ScreenShell>
+        <View style={styles.topBar}>
+          <Text style={styles.progressText}>{currentQuestionIndex + 1}/{questionQueue.length}</Text>
+          <View style={styles.badge}><Text style={styles.badgeText}>{selectedDifficulty.toUpperCase()}</Text></View>
+          <Text style={styles.progressText}>{elapsedSeconds}s</Text>
+        </View>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${((currentQuestionIndex + 1) / questionQueue.length) * 100}%` }]} />
+        </View>
+        <Surface style={styles.card}>
+          <Text style={styles.questionTopic}>{testTopicMeta[currentQuestion.topic].label}</Text>
+          <Text style={styles.questionText}>{currentQuestion.question}</Text>
+          {currentQuestion.options.map((option, index) => {
+            const correct = answered && index === currentQuestion.correctIndex;
+            const wrong = answered && index === selectedAnswer && index !== currentQuestion.correctIndex;
+            return (
+              <Pressable key={`${currentQuestion.id}-${option}`} onPress={() => handleAnswer(index)} style={[styles.option, correct && styles.optionCorrect, wrong && styles.optionWrong]}>
+                <Text style={styles.optionText}>{option}</Text>
+              </Pressable>
+            );
+          })}
+          {answered && <Text style={styles.explanation}>{currentQuestion.explanation}</Text>}
+        </Surface>
+      </ScreenShell>
+    );
+  }
+
+  if (!latestSession) {
+    return <ScreenShell><Text style={styles.muted}>No session results available.</Text></ScreenShell>;
+  }
+
+  const results = calculateTestResults(
+    latestSession.answers,
+    latestSession.stressScoreAtStart,
+    latestSession.affectiveStateAtStart
+  );
+  const studyRecommendations = generateTestStudyRecommendations(
+    results.weakTopics,
+    latestSession.affectiveStateAtStart,
+    latestSession.stressScoreAtStart
+  );
+  const correctCount = latestSession.answers.filter((answer) => answer.correct).length;
+  const averageTime = latestSession.answers.length
+    ? Math.round(latestSession.answers.reduce((total, answer) => total + answer.timeTakenSeconds, 0) / latestSession.answers.length)
+    : 0;
+
+  return (
+    <ScreenShell>
+      <SectionHeader title="Results" />
+      <Surface style={styles.card}>
+        <Text style={styles.score}>{results.score}%</Text>
+        <Text style={styles.titleText}>Difficulty stayed locked at {latestSession.lockedDifficulty}</Text>
+        <Text style={styles.muted}>{latestSession.questionCount} questions, {correctCount} correct, average time {averageTime}s.</Text>
+        <Text style={styles.muted}>{results.moodCorrelation.insight}</Text>
       </Surface>
 
-      {/* Dot indicators */}
-      <View style={styles.dotsRow}>
-        {questionQueue.map((_, idx) => (
-          <View
-            key={idx}
-            style={[
-              styles.dot,
-              idx < currentQuestionIndex && styles.dotAnswered,
-              idx === currentQuestionIndex && styles.dotCurrent,
-            ]}
-          />
-        ))}
-      </View>
-    </>
-    );
-  };
-
-  // ── Results screen ───────────────────────────────────────────────────────
-  const renderResults = () => {
-    const session = testHistory[0];
-    if (!session) return null;
-
-    const { score, weakTopics, topicBreakdown, moodCorrelation, peakDifficulty } = calculateTestResults(
-      session.answers,
-      session.stressScoreAtStart,
-      session.affectiveStateAtStart
-    );
-
-    const recommendations = generateTestStudyRecommendations(weakTopics, session.affectiveStateAtStart, session.stressScoreAtStart);
-    const R = 70;
-    const circumference = 2 * Math.PI * R;
-    const strokeDashoffset = circumference * (1 - score / 100);
-    const correctCount = session.answers.filter((a) => a.correct).length;
-    const avgTime = session.answers.length
-      ? Math.round(session.answers.reduce((s, a) => s + a.timeTakenSeconds, 0) / session.answers.length)
-      : 0;
-
-    return (
-    <>
-      <SectionHeader title="Your Results" />
-
-      {/* Score circle */}
-      <View style={styles.scoreCircleWrap}>
-        <Svg height={180} width={180}>
-          <Circle cx={90} cy={90} fill="none" r={R} stroke={palette.border} strokeWidth={12} />
-          <Circle
-            cx={90}
-            cy={90}
-            fill="none"
-            r={R}
-            stroke={palette.primary}
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            strokeLinecap="round"
-            strokeWidth={12}
-            transform="rotate(-90, 90, 90)"
-          />
-        </Svg>
-        <View style={styles.scoreOverlay}>
-          <Text style={styles.scoreNumber}>{score}%</Text>
-          <Text style={styles.scoreLabel}>Score</Text>
-        </View>
+      <View style={styles.metrics}>
+        <View style={metricWrap}><MetricTile label="Correct" support={`${correctCount}/${latestSession.answers.length}`} tone="green" value={`${correctCount}`} /></View>
+        <View style={metricWrap}><MetricTile label="Avg Time" support="Per question" tone="blue" value={`${averageTime}s`} /></View>
+        <View style={metricWrap}><MetricTile label="Peak Level" support="Locked for full test" tone="purple" value={latestSession.lockedDifficulty} /></View>
       </View>
 
-      {/* Metric tiles */}
-      <View style={styles.resultMetrics}>
-        <MetricTile label="Correct" support={`${correctCount}/${session.answers.length}`} tone="green" value={`${correctCount}`} />
-        <MetricTile label="Avg Time" support="per question" tone="blue" value={`${avgTime}s`} />
-        <MetricTile label="Peak Level" support="difficulty reached" tone="purple" value={peakDifficulty} />
-      </View>
+      {latestAiRecommendations && (
+        <Surface style={styles.card}>
+          <SectionHeader title="Shift Recommendations" />
+          <Text style={styles.titleText}>{latestAiRecommendations.explanation}</Text>
+          <View style={styles.rowWrap}>
+            {latestAiRecommendations.suggestions.map((suggestion) => (
+              <View key={suggestion} style={styles.chip}><Text style={styles.chipText}>{suggestion}</Text></View>
+            ))}
+          </View>
+        </Surface>
+      )}
 
       {isAnalyzingSession ? (
-        <Surface style={styles.resultCard}>
-          <SectionHeader title="Live backend analysis" />
-          <Text style={styles.corrInsight}>Syncing stress score, drift detection, and gamification...</Text>
-        </Surface>
+        <Surface style={styles.card}><Text style={styles.muted}>Analyzing session stress, behavior, and cognitive drift...</Text></Surface>
       ) : latestSessionAnalysis ? (
-        <Surface style={styles.resultCard}>
-          <SectionHeader title="Live backend analysis" />
-          <View style={styles.resultMetrics}>
-            <MetricTile
-              label="Stress Score"
-              support={latestSessionAnalysis.state}
-              tone={latestSessionAnalysis.state === 'critical' ? 'red' : latestSessionAnalysis.state === 'declining' ? 'yellow' : 'green'}
-              value={`${latestSessionAnalysis.stressScore}`}
-            />
-            <MetricTile
-              label="Drift"
-              support="Session signal"
-              tone={latestSessionAnalysis.drift.driftDetected ? 'red' : 'blue'}
-              value={latestSessionAnalysis.drift.driftDetected ? 'Detected' : 'Stable'}
-            />
+        <Surface style={styles.card}>
+          <SectionHeader title="Session Analysis" />
+          <View style={styles.metrics}>
+            <View style={metricWrap}><MetricTile label="Stress" support={latestSessionAnalysis.state} tone={latestSessionAnalysis.state === 'critical' ? 'red' : latestSessionAnalysis.state === 'declining' ? 'yellow' : 'green'} value={`${latestSessionAnalysis.stressScore}`} /></View>
+            <View style={metricWrap}><MetricTile label="Drift" support={latestSessionAnalysis.drift.driftSeverity} tone={latestSessionAnalysis.drift.driftDetected ? 'red' : 'blue'} value={latestSessionAnalysis.drift.driftDetected ? 'Detected' : 'Stable'} /></View>
+            <View style={metricWrap}><MetricTile label="Pulse" support="30% weight" tone="blue" value={`${latestSessionAnalysis.components.pulse}`} /></View>
           </View>
-          <Text style={styles.resultHighlight}>{latestSessionAnalysis.insight}</Text>
-          <Text style={styles.resultSupport}>{latestSessionAnalysis.recommendation}</Text>
-          <Text style={styles.resultSupport}>
-            {`Accuracy drop ${Math.round(latestSessionAnalysis.drift.accuracyDrop * 100)}% • Response time +${Math.round(
-              latestSessionAnalysis.drift.responseTimeIncrease / 1000
-            )}s`}
-          </Text>
-          <View style={styles.signalWrap}>
+          <Text style={styles.titleText}>{latestSessionAnalysis.reason}</Text>
+          <Text style={styles.muted}>{latestSessionAnalysis.recommendation}</Text>
+          <Text style={styles.muted}>Accuracy drop {Math.round(latestSessionAnalysis.drift.accuracyDrop * 100)}%, response time +{Math.round(latestSessionAnalysis.drift.responseTimeIncrease / 1000)}s, mistakes +{Math.round(latestSessionAnalysis.drift.mistakeFrequencyIncrease * 100)}%.</Text>
+          <View style={styles.rowWrap}>
             {latestSessionAnalysis.signals.map((signal) => (
-              <View key={signal} style={styles.signalPill}>
-                <Text style={styles.signalPillText}>{signal}</Text>
-              </View>
+              <View key={signal} style={styles.signalChip}><Text style={styles.signalChipText}>{signal}</Text></View>
             ))}
           </View>
         </Surface>
       ) : syncError ? (
-        <Surface style={styles.resultCard}>
-          <SectionHeader title="Live backend analysis" />
-          <Text style={styles.resultSupport}>{syncError}</Text>
-        </Surface>
+        <Surface style={styles.card}><Text style={styles.muted}>{syncError}</Text></Surface>
       ) : null}
 
-      {gamificationStatus ? (
-        <Surface style={styles.resultCard}>
-          <SectionHeader title="Recovery progress" />
-          <View style={styles.resultMetrics}>
-            <MetricTile label="XP" support="Resilience" tone="green" value={`${gamificationStatus.xp}`} />
-            <MetricTile label="Streak" support="Study sessions" tone="blue" value={`${gamificationStatus.streak}`} />
+      {gamificationStatus && (
+        <Surface style={styles.card}>
+          <SectionHeader title="Progress" />
+          <View style={styles.metrics}>
+            <View style={metricWrap}><MetricTile label="XP" support="Recovery progress" tone="green" value={`${gamificationStatus.xp}`} /></View>
+            <View style={metricWrap}><MetricTile label="Streak" support="Consistent sessions" tone="blue" value={`${gamificationStatus.streak}`} /></View>
           </View>
-          <View style={styles.signalWrap}>
-            {gamificationStatus.badges.length ? (
-              gamificationStatus.badges.map((badge) => (
-                <View key={badge} style={styles.signalPill}>
-                  <Text style={styles.signalPillText}>{badge}</Text>
-                </View>
-              ))
-            ) : (
-              <Text style={styles.resultSupport}>No badges yet. Keep showing up and recovering well.</Text>
-            )}
+          <View style={styles.rowWrap}>
+            {gamificationStatus.badges.length ? gamificationStatus.badges.map((badge) => (
+              <View key={badge} style={styles.chip}><Text style={styles.chipText}>{badge}</Text></View>
+            )) : <Text style={styles.muted}>No badges yet.</Text>}
           </View>
         </Surface>
-      ) : null}
+      )}
 
-      {/* Mood correlation */}
-      <Surface style={styles.resultCard}>
-        <SectionHeader title="Mood Correlation" />
-        <Text style={styles.corrLabel}>Early accuracy</Text>
-        <View style={styles.corrTrack}>
-          <View style={[styles.corrFill, { width: `${moodCorrelation.earlyAccuracy}%` }]} />
-        </View>
-        <Text style={styles.corrLabel}>Late accuracy</Text>
-        <View style={styles.corrTrack}>
-          <View style={[styles.corrFill, { width: `${moodCorrelation.lateAccuracy}%` }]} />
-        </View>
-        <Text style={styles.corrInsight}>{moodCorrelation.insight}</Text>
+      <Surface style={styles.card}>
+        <SectionHeader title="Weak Areas" />
+        {results.weakTopics.length ? results.weakTopics.map((topic) => (
+          <View key={topic} style={styles.reviewRow}>
+            <Text style={styles.titleText}>{testTopicMeta[topic].label}</Text>
+            <Text style={styles.muted}>{results.topicBreakdown[topic].correct}/{results.topicBreakdown[topic].total} correct</Text>
+          </View>
+        )) : <Text style={styles.muted}>No major weak area surfaced.</Text>}
       </Surface>
 
-      {/* Weak topics */}
-      <Surface style={styles.resultCard}>
-        <SectionHeader title="Weak Topics" />
-        {weakTopics.length === 0 ? (
-          <Text style={styles.noWeakText}>No critical weak areas — strong session!</Text>
-        ) : (
-          weakTopics.map((t) => {
-            const bd = topicBreakdown[t];
-            const pct = bd ? Math.round((bd.correct / bd.total) * 100) : 0;
-            return (
-              <View key={t} style={styles.weakRow}>
-                <Text style={styles.weakLabel}>{testTopicMeta[t].label}</Text>
-                <View style={styles.corrTrack}>
-                  <View style={[styles.corrFillDanger, { width: `${pct}%` }]} />
-                </View>
-                <Text style={styles.weakSub}>{bd?.correct ?? 0}/{bd?.total ?? 0} correct</Text>
-              </View>
-            );
-          })
-        )}
-      </Surface>
-
-      {/* Study recommendations */}
-      {recommendations.length > 0 ? (
-        <Surface style={styles.resultCard}>
-          <SectionHeader title="Study Recommendations" />
-          {recommendations.map((rec) => (
-            <View key={rec.topic} style={styles.recCard}>
-              <Text style={styles.recLabel}>{rec.label}</Text>
-              <Text style={styles.recApproach}>{rec.approach}</Text>
-              <View style={styles.recFooter}>
-                <View style={styles.durationPill}>
-                  <Text style={styles.durationText}>{rec.duration}</Text>
-                </View>
-                <Button
-                  mode="contained"
-                  onPress={() => setSnackbarVisible(true)}
-                  style={styles.saveButton}
-                  compact
-                >
-                  Save to Path
-                </Button>
-              </View>
+      {!!studyRecommendations.length && (
+        <Surface style={styles.card}>
+          <SectionHeader title="Focus Plan" />
+          {studyRecommendations.map((recommendation) => (
+            <View key={recommendation.topic} style={styles.reviewRow}>
+              <Text style={styles.titleText}>{recommendation.label}</Text>
+              <Text style={styles.muted}>{recommendation.approach}</Text>
+              <Button compact mode="contained-tonal" onPress={() => setSnackbarVisible(true)}>Save</Button>
             </View>
           ))}
         </Surface>
-      ) : null}
+      )}
 
-      {/* Answers review */}
-      <Surface style={styles.resultCard}>
-        <Pressable onPress={() => setShowAnswers((v) => !v)} style={styles.answersToggle}>
-          <Text style={styles.answersToggleText}>{showAnswers ? 'Hide Answers' : 'Show Answers'}</Text>
+      <Surface style={styles.card}>
+        <Pressable onPress={() => setShowAnswers((current) => !current)} style={styles.backRow}>
+          <Text style={styles.backText}>{showAnswers ? 'Hide answers' : 'Show answers'}</Text>
           <Ionicons color={palette.primary} name={showAnswers ? 'chevron-up-outline' : 'chevron-down-outline'} size={18} />
         </Pressable>
-        {showAnswers
-          ? session.answers.map((ans, idx) => {
-              const q = testQuestionBank.find((x) => x.id === ans.questionId);
-              if (!q) return null;
-              const expanded = expandedAnswerId === ans.questionId;
-              return (
-                <Pressable
-                  key={ans.questionId}
-                  onPress={() => setExpandedAnswerId(expanded ? null : ans.questionId)}
-                  style={styles.answerRow}
-                >
-                  <View style={styles.answerRowTop}>
-                    <Text numberOfLines={2} style={styles.answerQuestion}>
-                      {idx + 1}. {q.question.slice(0, 70)}{q.question.length > 70 ? '…' : ''}
-                    </Text>
-                    <Ionicons
-                      color={ans.correct ? palette.primary : palette.danger}
-                      name={ans.correct ? 'checkmark-circle-outline' : 'close-circle-outline'}
-                      size={20}
-                    />
-                  </View>
-                  {expanded ? (
-                    <View style={styles.answerDetail}>
-                      <Text style={[styles.answerPick, { color: ans.correct ? palette.primary : palette.danger }]}>
-                        Your answer: {q.options[ans.selectedIndex]}
-                      </Text>
-                      {!ans.correct ? (
-                        <Text style={styles.answerCorrect}>Correct: {q.options[q.correctIndex]}</Text>
-                      ) : null}
-                      <Text style={styles.answerExplain}>{q.explanation}</Text>
-                    </View>
-                  ) : null}
-                </Pressable>
-              );
-            })
-          : null}
+        {showAnswers && latestSession.answers.map((answer, index) => {
+          const question = testQuestionBank.find((item) => item.id === answer.questionId);
+          if (!question) {
+            return null;
+          }
+          return (
+            <View key={answer.questionId} style={styles.reviewRow}>
+              <Text style={styles.titleText}>{index + 1}. {question.question}</Text>
+              <Text style={styles.muted}>Your answer: {question.options[answer.selectedIndex]}</Text>
+              {!answer.correct && <Text style={styles.correctText}>Correct: {question.options[question.correctIndex]}</Text>}
+            </View>
+          );
+        })}
       </Surface>
 
-      {/* Bottom buttons */}
-      <View style={styles.resultButtons}>
-        <Button mode="outlined" onPress={() => setScreenState('config')} style={styles.retakeBtn}>
-          Retake
-        </Button>
-        <Button mode="contained" onPress={() => setScreenState('home')} style={styles.newTopicBtn}>
-          New Topic
-        </Button>
+      <View style={[styles.actions, isWide && styles.actionsWide]}>
+        <Button mode="outlined" onPress={() => setScreenState('config')} style={styles.actionButton}>Retake</Button>
+        <Button mode="contained" onPress={() => setScreenState('home')} style={styles.actionButton}>New Topic</Button>
       </View>
-
-      <Snackbar onDismiss={() => setSnackbarVisible(false)} visible={snackbarVisible}>
-        Topic saved to your study path.
-      </Snackbar>
-    </>
-    );
-  };
-
-  return (
-    <ScreenShell>
-      {screenState === 'home' && renderHome()}
-      {screenState === 'config' && renderConfig()}
-      {screenState === 'active' && renderActive()}
-      {screenState === 'results' && renderResults()}
+      <Snackbar onDismiss={() => setSnackbarVisible(false)} visible={snackbarVisible}>Topic saved to your study path.</Snackbar>
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  // Home
-  moodBanner: {
-    backgroundColor: palette.mintSoft,
-    borderLeftColor: palette.primary,
-    borderLeftWidth: 4,
-    borderRadius: radii.md,
-    marginBottom: spacing.md,
-    marginTop: spacing.md,
-    padding: spacing.md,
-  },
-  moodBannerRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  moodBannerText: {
-    color: palette.ink,
-    flex: 1,
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  topicGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-  topicCard: {
-    backgroundColor: palette.surface,
-    borderColor: palette.border,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    padding: spacing.md,
-    width: '47%',
-    ...shadows.card,
-  },
-  topicLabel: {
-    color: palette.navy,
-    fontSize: 15,
-    fontWeight: '800',
-    marginTop: spacing.sm,
-  },
-  topicDesc: {
-    color: palette.slate,
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 4,
-  },
-  mixedButton: {
-    marginTop: spacing.sm,
-  },
-  // Config
-  backRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: spacing.md,
-    marginTop: spacing.sm,
-  },
-  backText: {
-    color: palette.primary,
-    fontWeight: '700',
-  },
-  configTitle: {
-    color: palette.navy,
-    fontSize: 22,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  configDesc: {
-    color: palette.slate,
-    fontSize: 14,
-    lineHeight: 21,
-    marginBottom: spacing.lg,
-  },
-  configSectionLabel: {
-    color: palette.ink,
-    fontWeight: '700',
-    marginBottom: spacing.sm,
-    marginTop: spacing.md,
-  },
-  pillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  countPill: {
-    backgroundColor: palette.mist,
-    borderColor: palette.border,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-  },
-  countPillActive: {
-    backgroundColor: palette.primaryMuted,
-    borderColor: palette.primary,
-  },
-  countPillText: {
-    color: palette.slate,
-    fontWeight: '700',
-  },
-  countPillTextActive: {
-    color: palette.primary,
-  },
-  adaptiveRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: spacing.lg,
-  },
-  adaptiveLeft: {
-    flex: 1,
-  },
-  adaptiveLabel: {
-    color: palette.navy,
-    fontWeight: '700',
-  },
-  adaptiveHelper: {
-    color: palette.slate,
-    fontSize: 13,
-    marginTop: 2,
-  },
-  startButton: {
-    marginTop: spacing.xl,
-  },
-  // Active
-  activeTopBar: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  progressText: {
-    color: palette.slate,
-    fontWeight: '700',
-  },
-  diffBadge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-  },
-  diffBadgeText: {
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  timerText: {
-    color: palette.slate,
-    fontWeight: '700',
-  },
-  progressTrack: {
-    backgroundColor: palette.border,
-    borderRadius: radii.pill,
-    height: 6,
-    marginBottom: spacing.md,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    backgroundColor: palette.primary,
-    borderRadius: radii.pill,
-    height: 6,
-  },
-  adaptationToast: {
-    backgroundColor: palette.mintSoft,
-    borderRadius: radii.md,
-    marginBottom: spacing.md,
-    padding: spacing.md,
-  },
-  adaptationToastText: {
-    color: palette.ink,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  questionCard: {
-    backgroundColor: palette.surface,
-    borderRadius: radii.xl,
-    padding: spacing.lg,
-    ...shadows.card,
-  },
-  questionText: {
-    color: palette.navy,
-    fontSize: 18,
-    fontWeight: '700',
-    lineHeight: 27,
-    marginBottom: spacing.lg,
-  },
-  optionItem: {
-    alignItems: 'center',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.sm,
-    padding: spacing.md,
-  },
-  optionBadge: {
-    alignItems: 'center',
-    borderRadius: 16,
-    height: 32,
-    justifyContent: 'center',
-    width: 32,
-  },
-  optionBadgeText: {
-    color: palette.surface,
-    fontWeight: '800',
-  },
-  optionText: {
-    color: palette.navy,
-    flex: 1,
-    lineHeight: 22,
-  },
-  explanationBox: {
-    backgroundColor: palette.mintSoft,
-    borderRadius: radii.md,
-    marginTop: spacing.md,
-    padding: spacing.md,
-  },
-  explanationText: {
-    color: palette.ink,
-    fontStyle: 'italic',
-    lineHeight: 21,
-  },
-  dotsRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-    justifyContent: 'center',
-    marginTop: spacing.lg,
-  },
-  dot: {
-    backgroundColor: palette.border,
-    borderRadius: 4,
-    height: 8,
-    width: 8,
-  },
-  dotAnswered: {
-    backgroundColor: palette.primary,
-  },
-  dotCurrent: {
-    backgroundColor: palette.primary,
-    borderRadius: 4,
-    width: 20,
-  },
-  // Results
-  scoreCircleWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.md,
-    marginTop: spacing.md,
-  },
-  scoreOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scoreNumber: {
-    color: palette.navy,
-    fontSize: 40,
-    fontWeight: '900',
-  },
-  scoreLabel: {
-    color: palette.slate,
-    fontSize: 14,
-    marginTop: 2,
-  },
-  resultMetrics: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-  resultCard: {
-    backgroundColor: palette.surface,
-    borderRadius: radii.md,
-    marginBottom: spacing.md,
-    padding: spacing.md,
-    ...shadows.card,
-  },
-  corrLabel: {
-    color: palette.slate,
-    fontSize: 13,
-    marginBottom: 4,
-    marginTop: spacing.sm,
-  },
-  corrTrack: {
-    backgroundColor: palette.border,
-    borderRadius: 4,
-    height: 8,
-    overflow: 'hidden',
-  },
-  corrFill: {
-    backgroundColor: palette.primary,
-    borderRadius: 4,
-    height: 8,
-  },
-  corrFillDanger: {
-    backgroundColor: palette.danger,
-    borderRadius: 4,
-    height: 8,
-  },
-  corrInsight: {
-    color: palette.slate,
-    fontStyle: 'italic',
-    lineHeight: 21,
-    marginTop: spacing.md,
-  },
-  resultHighlight: {
-    color: palette.navy,
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: spacing.sm,
-  },
-  resultSupport: {
-    color: palette.ink,
-    lineHeight: 21,
-    marginTop: spacing.sm,
-  },
-  signalWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  signalPill: {
-    backgroundColor: palette.primaryMuted,
-    borderRadius: radii.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  signalPillText: {
-    color: palette.primary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  noWeakText: {
-    color: palette.primary,
-    fontWeight: '700',
-  },
-  weakRow: {
-    marginBottom: spacing.md,
-  },
-  weakLabel: {
-    color: palette.navy,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  weakSub: {
-    color: palette.slate,
-    fontSize: 12,
-    marginTop: 4,
-  },
-  recCard: {
-    backgroundColor: palette.mintSoft,
-    borderRadius: radii.md,
-    marginBottom: spacing.sm,
-    padding: spacing.md,
-  },
-  recLabel: {
-    color: palette.navy,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  recApproach: {
-    color: palette.ink,
-    lineHeight: 21,
-  },
-  recFooter: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.sm,
-    justifyContent: 'space-between',
-    marginTop: spacing.sm,
-  },
-  durationPill: {
-    backgroundColor: palette.primaryMuted,
-    borderRadius: radii.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  durationText: {
-    color: palette.primary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  saveButton: {
-    borderRadius: radii.pill,
-  },
-  answersToggle: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
-  },
-  answersToggleText: {
-    color: palette.primary,
-    fontWeight: '700',
-  },
-  answerRow: {
-    borderTopColor: palette.border,
-    borderTopWidth: 1,
-    paddingVertical: spacing.sm,
-  },
-  answerRowTop: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  answerQuestion: {
-    color: palette.navy,
-    flex: 1,
-    fontWeight: '600',
-    lineHeight: 20,
-  },
-  answerDetail: {
-    marginTop: spacing.sm,
-  },
-  answerPick: {
-    fontWeight: '700',
-    lineHeight: 20,
-  },
-  answerCorrect: {
-    color: palette.primary,
-    fontWeight: '700',
-    lineHeight: 20,
-    marginTop: 2,
-  },
-  answerExplain: {
-    color: palette.slate,
-    fontStyle: 'italic',
-    lineHeight: 21,
-    marginTop: spacing.sm,
-  },
-  resultButtons: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-    marginTop: spacing.sm,
-  },
-  retakeBtn: {
-    flex: 1,
-  },
-  newTopicBtn: {
-    flex: 1,
-  },
+  banner: { alignItems: 'center', backgroundColor: palette.surface, borderRadius: radii.md, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, padding: spacing.md, ...shadows.card },
+  bannerText: { color: palette.ink, flex: 1, lineHeight: 20 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginTop: spacing.sm },
+  topicCard: { backgroundColor: palette.surface, borderColor: palette.border, borderRadius: radii.md, borderWidth: 1, flexGrow: 1, minWidth: 150, padding: spacing.md, ...shadows.card },
+  topicTitle: { color: palette.navy, fontSize: 16, fontWeight: '800', marginTop: spacing.sm },
+  topButton: { marginTop: spacing.lg },
+  backRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs, justifyContent: 'space-between' },
+  backText: { color: palette.primary, fontWeight: '700' },
+  card: { backgroundColor: palette.surface, borderRadius: radii.lg, marginTop: spacing.md, padding: spacing.lg, ...shadows.card },
+  titleText: { color: palette.navy, fontSize: 16, fontWeight: '800', lineHeight: 24 },
+  muted: { color: palette.slate, lineHeight: 21, marginTop: spacing.xs },
+  sectionLabel: { color: palette.navy, fontWeight: '800', marginTop: spacing.lg },
+  rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  pill: { borderColor: palette.border, borderRadius: radii.pill, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 10 },
+  pillActive: { backgroundColor: palette.primaryMuted, borderColor: palette.primary },
+  pillText: { color: palette.slate, fontWeight: '700', textTransform: 'capitalize' },
+  pillTextActive: { color: palette.primary },
+  switchRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg },
+  switchCopy: { flex: 1 },
+  switchTitle: { color: palette.navy, fontWeight: '800' },
+  topBar: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md },
+  progressText: { color: palette.slate, fontWeight: '700' },
+  badge: { backgroundColor: palette.primaryMuted, borderRadius: radii.pill, paddingHorizontal: 12, paddingVertical: 8 },
+  badgeText: { color: palette.primary, fontWeight: '800' },
+  progressTrack: { backgroundColor: palette.border, borderRadius: radii.pill, height: 10, overflow: 'hidden' },
+  progressFill: { backgroundColor: palette.primary, height: '100%' },
+  questionTopic: { color: palette.primary, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
+  questionText: { color: palette.navy, fontSize: 22, fontWeight: '800', lineHeight: 30, marginTop: spacing.sm },
+  option: { backgroundColor: palette.mist, borderColor: palette.border, borderRadius: radii.md, borderWidth: 1, marginTop: spacing.md, padding: spacing.md },
+  optionCorrect: { backgroundColor: palette.primaryMuted, borderColor: palette.primary },
+  optionWrong: { backgroundColor: palette.dangerMuted, borderColor: palette.danger },
+  optionText: { color: palette.ink, lineHeight: 21 },
+  explanation: { color: palette.slate, lineHeight: 21, marginTop: spacing.md },
+  score: { color: palette.primary, fontSize: 42, fontWeight: '900' },
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginTop: spacing.md },
+  metricWrap: { width: '100%' },
+  metricWrapWide: { flex: 1, width: 'auto' },
+  chip: { backgroundColor: palette.primaryMuted, borderRadius: radii.pill, paddingHorizontal: 12, paddingVertical: 8 },
+  chipText: { color: palette.ink, fontWeight: '700' },
+  signalChip: { backgroundColor: palette.mist, borderColor: palette.border, borderRadius: radii.pill, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8 },
+  signalChipText: { color: palette.slate, fontWeight: '700' },
+  reviewRow: { borderTopColor: palette.border, borderTopWidth: 1, marginTop: spacing.md, paddingTop: spacing.md },
+  correctText: { color: palette.primary, fontWeight: '700', marginTop: spacing.xs },
+  actions: { flexDirection: 'column', gap: spacing.sm, marginTop: spacing.lg },
+  actionsWide: { flexDirection: 'row' },
+  actionButton: { flex: 1 },
 });

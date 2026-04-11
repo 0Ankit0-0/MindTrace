@@ -1,7 +1,6 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 
 import {
-  AdaptationEvent,
   AffectiveState,
   ChatMode,
   comfortRecordings,
@@ -23,7 +22,6 @@ import {
 } from '@/constants/DummyData';
 import {
   CheckInPayload,
-  getAdaptiveDifficulty,
   getAffectiveState,
   getNotificationMessage,
   getReadinessScore,
@@ -32,8 +30,9 @@ import {
   getStressStatus,
   getVelocityState,
 } from '@/services/mindtrace-engine';
-import { calculateTestResults } from '@/services/test-analytics';
+import { buildAiRecommendationPayload, calculateTestResults } from '@/services/test-analytics';
 import {
+  AiRecommendationResponse,
   AnalyzeSessionResponse,
   AnalyzeResponse,
   ApiError,
@@ -43,6 +42,7 @@ import {
   analyzeBrainDump,
   createCheckin,
   GamificationStatusResponse,
+  getAiRecommendations,
   getGamificationStatus,
   getCheckinHistory,
   getAiChatReply,
@@ -125,6 +125,7 @@ type MindTraceContextValue = {
   syncError: string | null;
   gamificationStatus: GamificationStatusResponse | null;
   latestSessionAnalysis: AnalyzeSessionResponse | null;
+  latestAiRecommendations: AiRecommendationResponse | null;
   isAnalyzingSession: boolean;
   testHistory: TestSession[];
   activeTestSession: TestSession | null;
@@ -176,6 +177,26 @@ const localChatResponses: Record<ChatMode, string> = {
     'Emergency comedy intervention: your syllabus is not a villain origin story, even if it is trying its best.',
   brainstorm:
     'Here is a gentle next move: pick one concept, one worked example, and one short recall round.',
+};
+
+const buildLocalAiRecommendationFallback = (
+  weakTopics: string[],
+  recentMistakes: string[]
+): AiRecommendationResponse => {
+  const suggestions = weakTopics.length
+    ? weakTopics.slice(0, 3).map((topic) => `Revise ${topic}`)
+    : recentMistakes.length
+      ? ['Review Your Last Mistakes', 'Practice One Easier Set', 'Retry the Weakest Concept']
+      : ['Revise Core Concepts', 'Practice One Focused Set'];
+
+  return {
+    suggestions,
+    explanation: recentMistakes.length
+      ? 'Based on your recent mistakes, these are the best concepts to clean up before the next session.'
+      : 'These suggestions are based on your recent weak topics.',
+    fallbackUsed: true,
+    provider: 'local',
+  };
 };
 
 const affectiveStateToSessionMood = (state: AffectiveState) => {
@@ -407,6 +428,7 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [gamificationStatus, setGamificationStatus] = useState<GamificationStatusResponse | null>(null);
   const [latestSessionAnalysis, setLatestSessionAnalysis] = useState<AnalyzeSessionResponse | null>(null);
+  const [latestAiRecommendations, setLatestAiRecommendations] = useState<AiRecommendationResponse | null>(null);
   const [isAnalyzingSession, setIsAnalyzingSession] = useState(false);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>(journalEntriesSeed);
   const [completedTopicIds, setCompletedTopicIds] = useState<string[]>([]);
@@ -593,6 +615,7 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     setSyncError(null);
     setGamificationStatus(null);
     setLatestSessionAnalysis(null);
+    setLatestAiRecommendations(null);
     setIsAnalyzingSession(false);
     setServerAnalysis(null);
     setServerCheckins([]);
@@ -602,6 +625,8 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     setOnboardingCompleted(false);
     setCompletedTopicIds([]);
     setCompletedRescueStepIds([]);
+    setTestHistory([]);
+    setActiveTestSession(null);
   };
 
   const submitCheckIn = async () => {
@@ -673,12 +698,16 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const latestTestPayload = testHistory[0] ? buildAiRecommendationPayload(testHistory[0].answers) : null;
+
     void getAiChatReply(authToken, {
       message: trimmed,
       mode: chatMode,
       affectiveState: derived.affectiveState,
       stressScore: derived.stressScore,
       name: studentProfile.name,
+      weakTopics: latestTestPayload?.weakTopics,
+      recentMistakes: latestTestPayload?.recentMistakes,
     })
       .then((response) => {
         appendBotReply(response.reply || localChatResponses[chatMode]);
@@ -694,11 +723,17 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     topic: TestTopic | 'mixed',
     difficulty: TestDifficulty,
     questionCount: number,
-    _adaptive: boolean
+    adaptive: boolean
   ) => {
+    setLatestSessionAnalysis(null);
+    setLatestAiRecommendations(null);
+    setSyncError(null);
     const newSession: TestSession = {
       id: Date.now().toString(),
       topic,
+      lockedDifficulty: difficulty,
+      questionCount,
+      adaptiveInsightsEnabled: adaptive,
       startedAt: new Date().toISOString(),
       finishedAt: null,
       affectiveStateAtStart: derived.affectiveState,
@@ -729,39 +764,7 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       };
       const allAnswers = [...current.answers, newAnswer];
 
-      // Count consecutive wrong/correct from the end
-      let consWrong = 0;
-      let consCorrect = 0;
-      for (let i = allAnswers.length - 1; i >= 0; i--) {
-        if (!allAnswers[i].correct) consWrong++;
-        else break;
-      }
-      for (let i = allAnswers.length - 1; i >= 0; i--) {
-        if (allAnswers[i].correct) consCorrect++;
-        else break;
-      }
-
-      const { newDifficulty, event } = getAdaptiveDifficulty(question.difficulty, consWrong, consCorrect);
-
-      const newEvents: AdaptationEvent[] = event
-        ? [
-            ...current.adaptationEvents,
-            {
-              atQuestion: allAnswers.length,
-              fromDifficulty: question.difficulty,
-              toDifficulty: newDifficulty,
-              reason: event,
-            },
-          ]
-        : current.adaptationEvents;
-
-      const diffOrder: TestDifficulty[] = ['easy', 'medium', 'hard'];
-      const peakDifficulty: TestDifficulty =
-        diffOrder.indexOf(newDifficulty) > diffOrder.indexOf(current.peakDifficulty)
-          ? newDifficulty
-          : current.peakDifficulty;
-
-      return { ...current, answers: allAnswers, adaptationEvents: newEvents, peakDifficulty };
+      return { ...current, answers: allAnswers, peakDifficulty: current.lockedDifficulty };
     });
   };
 
@@ -785,6 +788,14 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     setTestHistory((prev) => [finished, ...prev]);
     setActiveTestSession(null);
 
+    const recommendationPayload = buildAiRecommendationPayload(finished.answers);
+    setLatestAiRecommendations(
+      buildLocalAiRecommendationFallback(
+        recommendationPayload.weakTopics,
+        recommendationPayload.recentMistakes
+      )
+    );
+
     if (!authToken) {
       return;
     }
@@ -792,15 +803,24 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     setIsAnalyzingSession(true);
     setLatestSessionAnalysis(null);
 
-    void analyzeTestSession(authToken, {
-      answers: finished.answers.map((answer) => answer.correct),
-      responseTimes: finished.answers.map((answer) => answer.timeTakenSeconds * 1000),
-      mood: affectiveStateToSessionMood(finished.affectiveStateAtStart),
-      sleep: sleepTimingToHours(committed.sleepTiming),
-    })
-      .then((response) => {
-        setLatestSessionAnalysis(response);
-        setGamificationStatus(response.gamification);
+    void Promise.all([
+      analyzeTestSession(authToken, {
+        answers: finished.answers.map((answer) => answer.correct),
+        responseTimes: finished.answers.map((answer) => answer.timeTakenSeconds * 1000),
+        mood: affectiveStateToSessionMood(finished.affectiveStateAtStart),
+        sleep: sleepTimingToHours(committed.sleepTiming),
+      }),
+      getAiRecommendations(authToken, recommendationPayload).catch(() =>
+        buildLocalAiRecommendationFallback(
+          recommendationPayload.weakTopics,
+          recommendationPayload.recentMistakes
+        )
+      ),
+    ])
+      .then(([sessionResponse, recommendationResponse]) => {
+        setLatestSessionAnalysis(sessionResponse);
+        setGamificationStatus(sessionResponse.gamification);
+        setLatestAiRecommendations(recommendationResponse);
       })
       .catch((error) => {
         setSyncError(error instanceof Error ? error.message : 'Unable to analyze session');
@@ -835,6 +855,7 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       syncError,
       gamificationStatus,
       latestSessionAnalysis,
+      latestAiRecommendations,
       isAnalyzingSession,
       testHistory,
       activeTestSession,
@@ -910,6 +931,7 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       isSubmittingCheckIn,
       journalEntries,
       lastChatRating,
+      latestAiRecommendations,
       latestSessionAnalysis,
       nextStudyTopic,
       onboardingCompleted,

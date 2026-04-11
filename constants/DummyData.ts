@@ -333,6 +333,9 @@ export type TestAnswer = {
 export type TestSession = {
   id: string;
   topic: TestTopic | 'mixed';
+  lockedDifficulty: TestDifficulty;
+  questionCount: number;
+  adaptiveInsightsEnabled: boolean;
   startedAt: string;
   finishedAt: string | null;
   affectiveStateAtStart: AffectiveState;

@@ -1,9 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Surface, Text, TextInput } from 'react-native-paper';
 
-import { AnimatedReveal } from '@/components/AnimatedReveal';
 import { AppHeader } from '@/components/AppHeader';
 import { MetricTile } from '@/components/MetricTile';
 import { ScreenShell } from '@/components/ScreenShell';
@@ -13,171 +12,130 @@ import { palette, radii, shadows, spacing } from '@/constants/theme';
 import { useMindTrace } from '@/hooks/useMindTrace';
 
 const modeDescriptions: Record<ChatMode, string> = {
-  listener: 'For venting, decompression, and gentle reflection.',
-  laugh: 'For lightness, recovery, and breaking a spiral.',
-  brainstorm: 'For turning overwhelm into a precise next step.',
+  listener: 'For grounding and decompression.',
+  laugh: 'For lightness when the spiral needs breaking.',
+  brainstorm: 'For direct next-step planning tied to your learning signals.',
 };
 
 const ratingLabels = ['Needs work', 'Okay', 'Helpful', 'Very helpful', 'Excellent'];
 
 export default function ChatScreen() {
-  const { chatMessages, chatMode, lastChatRating, rateChat, sendChatMessage, setChatMode } = useMindTrace();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 720;
+  const {
+    chatMessages,
+    chatMode,
+    lastChatRating,
+    latestAiRecommendations,
+    latestSessionAnalysis,
+    rateChat,
+    sendChatMessage,
+    setChatMode,
+  } = useMindTrace();
   const [draft, setDraft] = useState('');
   const [showModeModal, setShowModeModal] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-
-  const sortedModes = useMemo<ChatMode[]>(() => ['listener', 'laugh', 'brainstorm'], []);
+  const modes = useMemo<ChatMode[]>(() => ['listener', 'laugh', 'brainstorm'], []);
 
   useEffect(() => {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, [chatMessages]);
 
-  const lastBotIndex = chatMessages.map((m) => m.role).lastIndexOf('bot');
+  const submitDraft = (message: string) => {
+    const trimmed = message.trim();
+    if (!trimmed) {
+      return;
+    }
+    sendChatMessage(trimmed);
+    setDraft('');
+  };
 
   return (
     <ScreenShell>
-      <AnimatedReveal>
-        <AppHeader
-          badge="Private support"
-          eyebrow="Shift"
-          subtitle="Choose a mode and start talking."
-          title="Shift"
-        />
-      </AnimatedReveal>
+      <AppHeader badge="Private support" eyebrow="Shift" title="Shift" subtitle="Chat now reflects your latest weak topics and session drift." />
 
-      <AnimatedReveal delay={70} style={styles.metrics}>
-        <MetricTile
-          label="Current Mode"
-          support="Support stance in this session"
-          tone="blue"
-          value={chatMode}
-        />
-        <MetricTile
-          label="Chat Quality"
-          support={lastChatRating ? ratingLabels[lastChatRating - 1] : 'No rating yet'}
-          tone="green"
-          value={lastChatRating ? `${lastChatRating}/5` : '-'}
-        />
-      </AnimatedReveal>
+      <View style={styles.metrics}>
+        <View style={[styles.metricWrap, isWide && styles.metricWrapWide]}>
+          <MetricTile label="Current Mode" support="Support stance" tone="blue" value={chatMode} />
+        </View>
+        <View style={[styles.metricWrap, isWide && styles.metricWrapWide]}>
+          <MetricTile label="Chat Quality" support={lastChatRating ? ratingLabels[lastChatRating - 1] : 'No rating yet'} tone="green" value={lastChatRating ? `${lastChatRating}/5` : '-'} />
+        </View>
+      </View>
 
-      {/* Mode selector bar */}
-      <AnimatedReveal delay={100}>
-        <Pressable onPress={() => setShowModeModal(true)} style={styles.modeSelectorBar}>
-          <View style={styles.modeSelectorLeft}>
-            <Text style={styles.modeSelectorTitle}>{chatMode.charAt(0).toUpperCase() + chatMode.slice(1)}</Text>
-            <Text style={styles.modeSelectorDesc}>{modeDescriptions[chatMode]}</Text>
+      {latestAiRecommendations && (
+        <Surface style={styles.card}>
+          <SectionHeader title="Live Suggestions" />
+          <Text style={styles.titleText}>{latestAiRecommendations.explanation}</Text>
+          <View style={styles.chips}>
+            {latestAiRecommendations.suggestions.map((suggestion) => (
+              <Pressable key={suggestion} onPress={() => submitDraft(`Help me with ${suggestion.toLowerCase()}.`)} style={styles.chip}>
+                <Text style={styles.chipText}>{suggestion}</Text>
+              </Pressable>
+            ))}
           </View>
-          <Ionicons color={palette.primary} name="chevron-down-outline" size={20} />
-        </Pressable>
-      </AnimatedReveal>
+          {latestSessionAnalysis && <Text style={styles.muted}>Current state: {latestSessionAnalysis.state}. {latestSessionAnalysis.reason}</Text>}
+        </Surface>
+      )}
 
-      {/* Conversation area */}
-      <AnimatedReveal delay={160}>
-        <Surface style={styles.chatSurface}>
-          <SectionHeader title="Conversation" />
-          <ScrollView
-            ref={scrollRef}
-            showsVerticalScrollIndicator={false}
-            style={styles.messagesScroll}
-          >
-            {chatMessages.map((message, index) => {
-              const isUser = message.role === 'user';
-              const isLastBot = !isUser && index === lastBotIndex;
+      <Pressable onPress={() => setShowModeModal(true)} style={styles.selector}>
+        <View style={styles.selectorCopy}>
+          <Text style={styles.selectorTitle}>{chatMode.charAt(0).toUpperCase() + chatMode.slice(1)}</Text>
+          <Text style={styles.muted}>{modeDescriptions[chatMode]}</Text>
+        </View>
+        <Ionicons color={palette.primary} name="chevron-down-outline" size={20} />
+      </Pressable>
 
-              return (
-                <View key={message.id}>
-                  {isUser ? (
-                    <View style={styles.userBubbleWrap}>
-                      <View style={styles.userBubble}>
-                        <Text style={styles.userText}>{message.text}</Text>
-                      </View>
-                      <Text style={styles.timestamp}>Just now</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.botBubbleWrap}>
-                      <View style={styles.botAvatarCircle}>
-                        <Ionicons color={palette.primary} name="leaf-outline" size={14} />
-                      </View>
-                      <View style={styles.botBubbleContent}>
-                        <View style={styles.botBubble}>
-                          <Text style={styles.botText}>{message.text}</Text>
-                        </View>
-                        <Text style={styles.timestamp}>Just now</Text>
-                        {isLastBot ? (
-                          <View style={styles.inlineRating}>
-                            {[1, 2, 3, 4, 5].map((rating) => (
-                              <Pressable key={rating} onPress={() => rateChat(rating)}>
-                                <Ionicons
-                                  color={palette.primary}
-                                  name={lastChatRating !== null && rating <= lastChatRating ? 'star' : 'star-outline'}
-                                  size={18}
-                                />
-                              </Pressable>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
+      <Surface style={styles.chatCard}>
+        <SectionHeader title="Conversation" />
+        <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} style={styles.messageList}>
+          {chatMessages.map((message, index) => {
+            const isUser = message.role === 'user';
+            const isLastBot = !isUser && index === chatMessages.map((item) => item.role).lastIndexOf('bot');
+            return (
+              <View key={message.id} style={[styles.messageRow, isUser && styles.messageRowUser]}>
+                {!isUser && <View style={styles.avatar}><Ionicons color={palette.primary} name="leaf-outline" size={14} /></View>}
+                <View style={[styles.bubble, isUser ? styles.userBubble : styles.botBubble]}>
+                  <Text style={[styles.bubbleText, isUser && styles.userBubbleText]}>{message.text}</Text>
+                  {!isUser && isLastBot && (
+                    <View style={styles.ratingRow}>
+                      {[1, 2, 3, 4, 5].map((rating) => (
+                        <Pressable key={rating} onPress={() => rateChat(rating)}>
+                          <Ionicons color={palette.primary} name={lastChatRating !== null && rating <= lastChatRating ? 'star' : 'star-outline'} size={18} />
+                        </Pressable>
+                      ))}
                     </View>
                   )}
                 </View>
-              );
-            })}
-          </ScrollView>
+              </View>
+            );
+          })}
+        </ScrollView>
+        <View style={styles.inputRow}>
+          <TextInput mode="outlined" onChangeText={setDraft} placeholder="Ask about a weak topic or paste what feels hard." style={styles.input} value={draft} />
+          <Pressable onPress={() => submitDraft(draft)} style={styles.sendButton}>
+            <Ionicons color={palette.surface} name="arrow-up-outline" size={20} />
+          </Pressable>
+        </View>
+      </Surface>
 
-          {/* Input area */}
-          <View style={styles.inputRow}>
-            <TextInput
-              mode="outlined"
-              onChangeText={setDraft}
-              placeholder="Type a message or paste what feels hard."
-              style={styles.input}
-              value={draft}
-            />
-            <Pressable
-              onPress={() => {
-                sendChatMessage(draft);
-                setDraft('');
-              }}
-              style={styles.sendButton}
-            >
-              <Ionicons color="white" name="arrow-up-outline" size={20} />
-            </Pressable>
-          </View>
-        </Surface>
-      </AnimatedReveal>
-
-      {/* Mode selection modal */}
-      <Modal
-        animationType="slide"
-        onRequestClose={() => setShowModeModal(false)}
-        transparent
-        visible={showModeModal}
-      >
+      <Modal animationType="slide" onRequestClose={() => setShowModeModal(false)} transparent visible={showModeModal}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
-            <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Choose Support Mode</Text>
-            {sortedModes.map((mode) => {
-              const isActive = chatMode === mode;
-              return (
-                <Pressable
-                  key={mode}
-                  onPress={() => {
-                    setChatMode(mode);
-                    setShowModeModal(false);
-                  }}
-                  style={[
-                    styles.modeItem,
-                    isActive && styles.modeItemActive,
-                  ]}
-                >
-                  <Text style={[styles.modeItemTitle, isActive && styles.modeItemTitleActive]}>
-                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                  </Text>
-                  <Text style={styles.modeItemDesc}>{modeDescriptions[mode]}</Text>
-                </Pressable>
-              );
-            })}
+            {modes.map((mode) => (
+              <Pressable
+                key={mode}
+                onPress={() => {
+                  setChatMode(mode);
+                  setShowModeModal(false);
+                }}
+                style={[styles.modeRow, chatMode === mode && styles.modeRowActive]}
+              >
+                <Text style={styles.titleText}>{mode.charAt(0).toUpperCase() + mode.slice(1)}</Text>
+                <Text style={styles.muted}>{modeDescriptions[mode]}</Text>
+              </Pressable>
+            ))}
           </View>
         </View>
       </Modal>
@@ -186,166 +144,35 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  metrics: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginTop: spacing.md,
-  },
-  modeSelectorBar: {
-    alignItems: 'center',
-    backgroundColor: palette.mintSoft,
-    borderRadius: radii.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: spacing.md,
-    padding: spacing.md,
-  },
-  modeSelectorLeft: {
-    flex: 1,
-  },
-  modeSelectorTitle: {
-    color: palette.navy,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  modeSelectorDesc: {
-    color: palette.slate,
-    fontSize: 13,
-    lineHeight: 20,
-    marginTop: 2,
-  },
-  chatSurface: {
-    backgroundColor: palette.surface,
-    borderRadius: radii.md,
-    flex: 1,
-    marginTop: spacing.md,
-    minHeight: 300,
-    padding: spacing.md,
-    ...shadows.card,
-  },
-  messagesScroll: {
-    maxHeight: 340,
-  },
-  userBubbleWrap: {
-    alignItems: 'flex-end',
-    marginBottom: spacing.sm,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: palette.primary,
-    borderRadius: radii.md,
-    maxWidth: '80%',
-    padding: spacing.md,
-  },
-  userText: {
-    color: 'white',
-    lineHeight: 21,
-  },
-  botBubbleWrap: {
-    alignItems: 'flex-end',
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: spacing.sm,
-  },
-  botAvatarCircle: {
-    alignItems: 'center',
-    backgroundColor: palette.primaryMuted,
-    borderRadius: 14,
-    height: 28,
-    justifyContent: 'center',
-    width: 28,
-  },
-  botBubbleContent: {
-    flex: 1,
-  },
-  botBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: palette.mintSoft,
-    borderRadius: radii.md,
-    maxWidth: '92%',
-    padding: spacing.md,
-  },
-  botText: {
-    color: palette.ink,
-    lineHeight: 21,
-  },
-  timestamp: {
-    color: palette.sage,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  inlineRating: {
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: spacing.sm,
-  },
-  inputRow: {
-    alignItems: 'flex-end',
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  input: {
-    backgroundColor: palette.surface,
-    flex: 1,
-  },
-  sendButton: {
-    alignItems: 'center',
-    backgroundColor: palette.primary,
-    borderRadius: 24,
-    height: 48,
-    justifyContent: 'center',
-    width: 48,
-  },
-  modalOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: palette.surface,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: spacing.lg,
-    paddingBottom: 40,
-  },
-  modalHandle: {
-    alignSelf: 'center',
-    backgroundColor: palette.border,
-    borderRadius: 2,
-    height: 4,
-    marginBottom: spacing.lg,
-    width: 40,
-  },
-  modalTitle: {
-    color: palette.navy,
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: spacing.sm,
-  },
-  modeItem: {
-    backgroundColor: palette.mist,
-    borderColor: 'transparent',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    marginTop: spacing.sm,
-    padding: spacing.md,
-  },
-  modeItemActive: {
-    backgroundColor: palette.primaryMuted,
-    borderColor: palette.primary,
-  },
-  modeItemTitle: {
-    color: palette.navy,
-    fontWeight: '700',
-  },
-  modeItemTitleActive: {
-    color: palette.primary,
-  },
-  modeItemDesc: {
-    color: palette.slate,
-    fontSize: 13,
-    lineHeight: 20,
-    marginTop: 4,
-  },
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginTop: spacing.md },
+  metricWrap: { width: '100%' },
+  metricWrapWide: { flex: 1, width: 'auto' },
+  card: { backgroundColor: palette.surface, borderRadius: radii.lg, marginTop: spacing.md, padding: spacing.lg, ...shadows.card },
+  titleText: { color: palette.navy, fontSize: 16, fontWeight: '800', lineHeight: 24 },
+  muted: { color: palette.slate, lineHeight: 21, marginTop: spacing.xs },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
+  chip: { backgroundColor: palette.primaryMuted, borderRadius: radii.pill, paddingHorizontal: 12, paddingVertical: 8 },
+  chipText: { color: palette.ink, fontWeight: '700' },
+  selector: { alignItems: 'center', backgroundColor: palette.mintSoft, borderRadius: radii.md, flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.md, padding: spacing.md },
+  selectorCopy: { flex: 1 },
+  selectorTitle: { color: palette.navy, fontSize: 16, fontWeight: '800' },
+  chatCard: { backgroundColor: palette.surface, borderRadius: radii.lg, flex: 1, marginTop: spacing.md, minHeight: 380, padding: spacing.lg, ...shadows.card },
+  messageList: { maxHeight: 420 },
+  messageRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm },
+  messageRowUser: { justifyContent: 'flex-end' },
+  avatar: { alignItems: 'center', backgroundColor: palette.primaryMuted, borderRadius: 14, height: 28, justifyContent: 'center', width: 28 },
+  bubble: { borderRadius: radii.md, maxWidth: '88%', padding: spacing.md },
+  botBubble: { backgroundColor: palette.mintSoft },
+  userBubble: { backgroundColor: palette.primary },
+  bubbleText: { color: palette.ink, lineHeight: 21 },
+  userBubbleText: { color: palette.surface },
+  ratingRow: { flexDirection: 'row', gap: 4, marginTop: spacing.sm },
+  inputRow: { alignItems: 'flex-end', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  input: { backgroundColor: palette.surface, flex: 1 },
+  sendButton: { alignItems: 'center', backgroundColor: palette.primary, borderRadius: 24, height: 48, justifyContent: 'center', width: 48 },
+  modalOverlay: { backgroundColor: 'rgba(0,0,0,0.35)', flex: 1, justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: palette.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: spacing.lg, paddingBottom: 36 },
+  modalTitle: { color: palette.navy, fontSize: 20, fontWeight: '800', marginBottom: spacing.sm },
+  modeRow: { backgroundColor: palette.mist, borderRadius: radii.md, marginTop: spacing.sm, padding: spacing.md },
+  modeRowActive: { backgroundColor: palette.primaryMuted },
 });
