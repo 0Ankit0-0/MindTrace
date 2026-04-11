@@ -9,7 +9,7 @@ import { MetricTile } from '@/components/MetricTile';
 import { ScreenShell } from '@/components/ScreenShell';
 import { SectionHeader } from '@/components/SectionHeader';
 import { ChatMode } from '@/constants/DummyData';
-import { getEmotionTheme, palette, radii, shadows, spacing } from '@/constants/theme';
+import { palette, radii, shadows, spacing } from '@/constants/theme';
 import { useMindTrace } from '@/hooks/useMindTrace';
 
 const modeDescriptions: Record<ChatMode, string> = {
@@ -21,11 +21,9 @@ const modeDescriptions: Record<ChatMode, string> = {
 const ratingLabels = ['Needs work', 'Okay', 'Helpful', 'Very helpful', 'Excellent'];
 
 export default function ChatScreen() {
-  const { affectiveState, chatMessages, chatMode, lastChatRating, rateChat, sendChatMessage, setChatMode } =
-    useMindTrace();
+  const { chatMessages, chatMode, lastChatRating, rateChat, sendChatMessage, setChatMode } = useMindTrace();
   const [draft, setDraft] = useState('');
   const [showModeModal, setShowModeModal] = useState(false);
-  const emotionTheme = getEmotionTheme(affectiveState);
   const scrollRef = useRef<ScrollView>(null);
 
   const sortedModes = useMemo<ChatMode[]>(() => ['listener', 'laugh', 'brainstorm'], []);

@@ -7,6 +7,8 @@ import aiRoutes from "./routes/ai.routes";
 import checkinRoutes from "./routes/checkin.routes";
 import analyzeRoutes from "./routes/analyze.routes";
 import studyPlanRoutes from "./routes/study-plan.routes";
+import sessionRoutes from "./routes/session.routes";
+import gamificationRoutes from "./routes/gamification.routes";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware";
 import { requestLogger } from "./middleware/logger.middleware";
 import db from "./database/sqlite/db";
@@ -38,7 +40,9 @@ app.use("/onboarding", onboardingRoutes);
 app.use("/ai", aiRoutes);
 app.use("/checkin", checkinRoutes);
 app.use("/analyze", analyzeRoutes);
+app.use("/analyze-session", sessionRoutes);
 app.use("/study-plan", studyPlanRoutes);
+app.use("/gamification", gamificationRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

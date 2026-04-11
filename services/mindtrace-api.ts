@@ -35,6 +35,36 @@ export type StudyPlanResponse = {
   plan: string[];
 };
 
+export type AnalyzeSessionResponse = {
+  sessionId: number;
+  stressScore: number;
+  state: 'stable' | 'declining' | 'critical';
+  insight: string;
+  recommendation: string;
+  drift: {
+    accuracy: number;
+    avgResponseTime: number;
+    firstHalfAccuracy: number;
+    secondHalfAccuracy: number;
+    firstHalfResponseTime: number;
+    secondHalfResponseTime: number;
+    driftDetected: boolean;
+  };
+  components: {
+    mood: number;
+    behavioral: number;
+    drift: number;
+  };
+  signals: string[];
+  gamification: GamificationStatusResponse;
+};
+
+export type GamificationStatusResponse = {
+  xp: number;
+  streak: number;
+  badges: string[];
+};
+
 export type AiChatResponse = {
   reply: string;
   fallbackUsed: boolean;
@@ -76,8 +106,10 @@ const getHostFromExpo = () => {
 };
 
 export const getApiBaseUrl = () => {
-  if (process.env.EXPO_PUBLIC_API_BASE_URL) {
-    return process.env.EXPO_PUBLIC_API_BASE_URL;
+  const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/+$/, '');
   }
 
   const expoHost = getHostFromExpo();
@@ -175,6 +207,26 @@ export const analyze = (payload: { mood: string; sleep: number }) =>
 
 export const getStudyPlan = (token: string) =>
   request<StudyPlanResponse>('/study-plan', {
+    token,
+  });
+
+export const analyzeSession = (
+  token: string,
+  payload: {
+    answers: boolean[];
+    responseTimes: number[];
+    mood?: string;
+    sleep?: number;
+  },
+) =>
+  request<AnalyzeSessionResponse>('/analyze-session', {
+    method: 'POST',
+    token,
+    body: payload,
+  });
+
+export const getGamificationStatus = (token: string) =>
+  request<GamificationStatusResponse>('/gamification/status', {
     token,
   });
 

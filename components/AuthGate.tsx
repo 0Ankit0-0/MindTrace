@@ -5,7 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Surface, Text, TextInput } from 'react-native-paper';
 
-import { palette, radii, shadows, spacing } from '@/constants/theme';
+import { palette, radii, spacing } from '@/constants/theme';
 import { useMindTrace } from '@/hooks/useMindTrace';
 
 export function AuthGate() {

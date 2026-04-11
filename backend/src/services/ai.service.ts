@@ -16,8 +16,9 @@ interface BrainDumpInput {
   sleep?: number;
 }
 
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const geminiModelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+const geminiModelName = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+const geminiMaxAttempts = Math.max(1, Number(process.env.GEMINI_MAX_ATTEMPTS || 2));
 let geminiModel: GenerativeModel | null = null;
 
 const responseBank: Record<ChatMode, string> = {
@@ -97,11 +98,45 @@ const getGeminiModel = () => {
   return geminiModel;
 };
 
-export const generateChatReply = async (input: ChatInput) => {
-  const fallbackReply = responseBank[input.mode];
+const isRetryableGeminiError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\[(500|502|503|504) /.test(message);
+};
+
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const generateGeminiText = async (prompt: string) => {
   const model = getGeminiModel();
 
   if (!model) {
+    return null;
+  }
+
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= geminiMaxAttempts; attempt += 1) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result.response.text().trim();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt >= geminiMaxAttempts || !isRetryableGeminiError(error)) {
+        break;
+      }
+
+      await wait(650 * attempt);
+    }
+  }
+
+  throw lastError;
+};
+
+export const generateChatReply = async (input: ChatInput) => {
+  const fallbackReply = responseBank[input.mode];
+  const prompt = buildChatPrompt(input);
+
+  if (!geminiApiKey) {
     return {
       reply: fallbackReply,
       fallbackUsed: true,
@@ -110,15 +145,15 @@ export const generateChatReply = async (input: ChatInput) => {
   }
 
   try {
-    const result = await model.generateContent(buildChatPrompt(input));
-    const reply = result.response.text().trim();
+    const reply = (await generateGeminiText(prompt)) || "";
 
     return {
       reply: reply || fallbackReply,
       fallbackUsed: !reply,
       provider: "gemini",
     };
-  } catch {
+  } catch (error) {
+    console.warn("Gemini chat fallback used:", error instanceof Error ? error.message : error);
     return {
       reply: fallbackReply,
       fallbackUsed: true,
@@ -137,15 +172,12 @@ export const extractBrainDumpInsights = async (input: BrainDumpInput) => {
     provider: "local",
   } as const;
 
-  const model = getGeminiModel();
-
-  if (!model) {
+  if (!geminiApiKey) {
     return fallback;
   }
 
   try {
-    const result = await model.generateContent(buildBrainDumpPrompt(input));
-    const raw = result.response.text().trim();
+    const raw = (await generateGeminiText(buildBrainDumpPrompt(input))) || "";
     const parsed = tryParseJson<{
       summary?: string;
       stressSignals?: string[];
@@ -165,7 +197,8 @@ export const extractBrainDumpInsights = async (input: BrainDumpInput) => {
       fallbackUsed: false,
       provider: "gemini",
     };
-  } catch {
+  } catch (error) {
+    console.warn("Gemini brain dump fallback used:", error instanceof Error ? error.message : error);
     return fallback;
   }
 };
