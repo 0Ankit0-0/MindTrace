@@ -105,11 +105,17 @@ export const analyzeSession = (userId: number, input: AnalyzeSessionInput): Anal
 
   updateBaseline(userId, drift.accuracy, drift.avgResponseTime);
 
+  const insight = drift.driftDetected
+    ? "Cognitive fatigue detected"
+    : stress.state === "stable" && stress.stressScore <= 45
+      ? "Low stress and stable performance detected"
+      : "Session pattern is stable";
+
   return {
     sessionId: Number(result.lastInsertRowid),
     stressScore: stress.stressScore,
     state: stress.state,
-    insight: drift.driftDetected ? "Cognitive fatigue detected" : "Session pattern is stable",
+    insight,
     recommendation: getStressRecommendation(stress.state, drift.driftDetected),
     drift,
     components: stress.components,

@@ -26,6 +26,7 @@ export default function CheckInScreen() {
     affectiveState,
     comfortRecordings,
     notification,
+    gamificationStatus,
     nextStudyTopic,
     playComfortRecording,
     readinessScore,
@@ -158,6 +159,24 @@ export default function CheckInScreen() {
           value={`${readinessScore}%`}
         />
       </AnimatedReveal>
+
+      {gamificationStatus ? (
+        <AnimatedReveal delay={90}>
+          <Surface style={styles.banner}>
+            <Text style={styles.bannerTitle}>Recovery progress</Text>
+            <Text style={styles.bannerText}>
+              {`XP ${gamificationStatus.xp} • Streak ${gamificationStatus.streak}`}
+            </Text>
+            {gamificationStatus.badges.length ? (
+              <View style={styles.previewMeta}>
+                {gamificationStatus.badges.slice(0, 3).map((badge) => (
+                  <StatusPill key={badge} label={badge} tone="green" />
+                ))}
+              </View>
+            ) : null}
+          </Surface>
+        </AnimatedReveal>
+      ) : null}
 
       <AnimatedReveal delay={120}>
         <Surface style={[styles.primaryActionCard, { backgroundColor: emotionTheme.surfaceTint }]}>

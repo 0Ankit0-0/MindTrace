@@ -34,6 +34,8 @@ export interface SessionDriftResult {
   firstHalfResponseTime: number;
   secondHalfResponseTime: number;
   driftDetected: boolean;
+  accuracyDrop: number;
+  responseTimeIncrease: number;
 }
 
 const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value));
@@ -87,7 +89,12 @@ export const detectSessionDrift = ({ answers, responseTimes }: SessionDriftInput
   const secondHalfAccuracy = calculateAccuracy(secondHalfAnswers.length ? secondHalfAnswers : firstHalfAnswers);
   const firstHalfResponseTime = average(firstHalfTimes);
   const secondHalfResponseTime = average(secondHalfTimes.length ? secondHalfTimes : firstHalfTimes);
-  const driftDetected = secondHalfAccuracy < firstHalfAccuracy && secondHalfResponseTime > firstHalfResponseTime;
+  const accuracyDrop = firstHalfAccuracy - secondHalfAccuracy;
+  const responseTimeIncrease = secondHalfResponseTime - firstHalfResponseTime;
+  const driftDetected =
+    answers.length >= 4 &&
+    accuracyDrop >= 0.15 &&
+    responseTimeIncrease >= Math.max(250, firstHalfResponseTime * 0.12);
 
   return {
     accuracy,
@@ -97,6 +104,8 @@ export const detectSessionDrift = ({ answers, responseTimes }: SessionDriftInput
     firstHalfResponseTime,
     secondHalfResponseTime,
     driftDetected,
+    accuracyDrop,
+    responseTimeIncrease,
   };
 };
 
@@ -113,7 +122,9 @@ export const getStressRecommendation = (state: StressState, driftDetected = fals
       : "Use a lighter study block with short breaks and one clear task.";
   }
 
-  return "You look stable. Continue with a steady study block and keep breaks scheduled.";
+  return driftDetected
+    ? "Stress is still manageable, but fatigue is starting to show. Pause briefly, then continue with a shorter set."
+    : "Stress is low. Keep the momentum, raise difficulty gradually, and use one challenge problem while focus is steady.";
 };
 
 export const calculateStressScore = (input: StressInput): StressResult => {

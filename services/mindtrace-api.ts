@@ -49,6 +49,8 @@ export type AnalyzeSessionResponse = {
     firstHalfResponseTime: number;
     secondHalfResponseTime: number;
     driftDetected: boolean;
+    accuracyDrop: number;
+    responseTimeIncrease: number;
   };
   components: {
     mood: number;

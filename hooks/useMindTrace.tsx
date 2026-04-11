@@ -23,7 +23,6 @@ import {
 } from '@/constants/DummyData';
 import {
   CheckInPayload,
-  calculateTestResults,
   getAdaptiveDifficulty,
   getAffectiveState,
   getNotificationMessage,
@@ -33,13 +32,18 @@ import {
   getStressStatus,
   getVelocityState,
 } from '@/services/mindtrace-engine';
+import { calculateTestResults } from '@/services/test-analytics';
 import {
+  AnalyzeSessionResponse,
   AnalyzeResponse,
   ApiError,
   CheckinResponse,
   analyze,
+  analyzeSession as analyzeTestSession,
   analyzeBrainDump,
   createCheckin,
+  GamificationStatusResponse,
+  getGamificationStatus,
   getCheckinHistory,
   getAiChatReply,
   getMe,
@@ -119,6 +123,9 @@ type MindTraceContextValue = {
   onboardingCompleted: boolean;
   authUser: AuthUser | null;
   syncError: string | null;
+  gamificationStatus: GamificationStatusResponse | null;
+  latestSessionAnalysis: AnalyzeSessionResponse | null;
+  isAnalyzingSession: boolean;
   testHistory: TestSession[];
   activeTestSession: TestSession | null;
   updateDraft: (input: Partial<CheckInPayload>) => void;
@@ -169,6 +176,19 @@ const localChatResponses: Record<ChatMode, string> = {
     'Emergency comedy intervention: your syllabus is not a villain origin story, even if it is trying its best.',
   brainstorm:
     'Here is a gentle next move: pick one concept, one worked example, and one short recall round.',
+};
+
+const affectiveStateToSessionMood = (state: AffectiveState) => {
+  switch (state) {
+    case 'frustration':
+      return 'stressed';
+    case 'confusion':
+      return 'stressed';
+    case 'boredom':
+      return 'sad';
+    default:
+      return 'steady';
+  }
 };
 
 const moodToTags = (payload: CheckInPayload) => {
@@ -385,6 +405,9 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
   const [isSubmittingCheckIn, setIsSubmittingCheckIn] = useState(false);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [gamificationStatus, setGamificationStatus] = useState<GamificationStatusResponse | null>(null);
+  const [latestSessionAnalysis, setLatestSessionAnalysis] = useState<AnalyzeSessionResponse | null>(null);
+  const [isAnalyzingSession, setIsAnalyzingSession] = useState(false);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>(journalEntriesSeed);
   const [completedTopicIds, setCompletedTopicIds] = useState<string[]>([]);
   const [completedRescueStepIds, setCompletedRescueStepIds] = useState<string[]>([]);
@@ -444,9 +467,11 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
 
   const hydrateFromBackend = async (token: string) => {
     const historyResponse = await getCheckinHistory(token);
+    const gamificationResponse = await getGamificationStatus(token).catch(() => null);
     const latestCheckin = historyResponse.checkins[0];
 
     setServerCheckins(historyResponse.checkins);
+    setGamificationStatus(gamificationResponse);
 
     if (!latestCheckin) {
       setCommitted(initialPayload);
@@ -566,6 +591,9 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
     setAuthToken(null);
     setAuthUser(null);
     setSyncError(null);
+    setGamificationStatus(null);
+    setLatestSessionAnalysis(null);
+    setIsAnalyzingSession(false);
     setServerAnalysis(null);
     setServerCheckins([]);
     setServerStudyPlan(mapBackendStudyPlan(null));
@@ -756,6 +784,30 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
 
     setTestHistory((prev) => [finished, ...prev]);
     setActiveTestSession(null);
+
+    if (!authToken) {
+      return;
+    }
+
+    setIsAnalyzingSession(true);
+    setLatestSessionAnalysis(null);
+
+    void analyzeTestSession(authToken, {
+      answers: finished.answers.map((answer) => answer.correct),
+      responseTimes: finished.answers.map((answer) => answer.timeTakenSeconds * 1000),
+      mood: affectiveStateToSessionMood(finished.affectiveStateAtStart),
+      sleep: sleepTimingToHours(committed.sleepTiming),
+    })
+      .then((response) => {
+        setLatestSessionAnalysis(response);
+        setGamificationStatus(response.gamification);
+      })
+      .catch((error) => {
+        setSyncError(error instanceof Error ? error.message : 'Unable to analyze session');
+      })
+      .finally(() => {
+        setIsAnalyzingSession(false);
+      });
   };
 
   const value = useMemo<MindTraceContextValue>(
@@ -781,6 +833,9 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       onboardingCompleted,
       authUser,
       syncError,
+      gamificationStatus,
+      latestSessionAnalysis,
+      isAnalyzingSession,
       testHistory,
       activeTestSession,
       updateDraft,
@@ -855,10 +910,13 @@ export function MindTraceProvider({ children }: { children: ReactNode }) {
       isSubmittingCheckIn,
       journalEntries,
       lastChatRating,
+      latestSessionAnalysis,
       nextStudyTopic,
       onboardingCompleted,
       rescueCompletionRate,
       syncError,
+      gamificationStatus,
+      isAnalyzingSession,
       studentProfile,
       testHistory,
     ]

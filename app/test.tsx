@@ -11,11 +11,8 @@ import { SectionHeader } from '@/components/SectionHeader';
 import { TestDifficulty, TestQuestion, TestTopic, testQuestionBank, testTopicMeta } from '@/constants/DummyData';
 import { palette, radii, shadows, spacing } from '@/constants/theme';
 import { useMindTrace } from '@/hooks/useMindTrace';
-import {
-  calculateTestResults,
-  generateTestStudyRecommendations,
-  getAdaptiveDifficulty,
-} from '@/services/mindtrace-engine';
+import { getAdaptiveDifficulty } from '@/services/mindtrace-engine';
+import { calculateTestResults, generateTestStudyRecommendations } from '@/services/test-analytics';
 
 type ScreenState = 'home' | 'config' | 'active' | 'results';
 
@@ -61,6 +58,10 @@ function shuffle<T>(arr: T[]): T[] {
 export default function TestScreen() {
   const {
     affectiveState,
+    gamificationStatus,
+    isAnalyzingSession,
+    latestSessionAnalysis,
+    syncError,
     stressScore,
     startTest,
     submitTestAnswer,
@@ -469,6 +470,71 @@ export default function TestScreen() {
         <MetricTile label="Avg Time" support="per question" tone="blue" value={`${avgTime}s`} />
         <MetricTile label="Peak Level" support="difficulty reached" tone="purple" value={peakDifficulty} />
       </View>
+
+      {isAnalyzingSession ? (
+        <Surface style={styles.resultCard}>
+          <SectionHeader title="Live backend analysis" />
+          <Text style={styles.corrInsight}>Syncing stress score, drift detection, and gamification...</Text>
+        </Surface>
+      ) : latestSessionAnalysis ? (
+        <Surface style={styles.resultCard}>
+          <SectionHeader title="Live backend analysis" />
+          <View style={styles.resultMetrics}>
+            <MetricTile
+              label="Stress Score"
+              support={latestSessionAnalysis.state}
+              tone={latestSessionAnalysis.state === 'critical' ? 'red' : latestSessionAnalysis.state === 'declining' ? 'yellow' : 'green'}
+              value={`${latestSessionAnalysis.stressScore}`}
+            />
+            <MetricTile
+              label="Drift"
+              support="Session signal"
+              tone={latestSessionAnalysis.drift.driftDetected ? 'red' : 'blue'}
+              value={latestSessionAnalysis.drift.driftDetected ? 'Detected' : 'Stable'}
+            />
+          </View>
+          <Text style={styles.resultHighlight}>{latestSessionAnalysis.insight}</Text>
+          <Text style={styles.resultSupport}>{latestSessionAnalysis.recommendation}</Text>
+          <Text style={styles.resultSupport}>
+            {`Accuracy drop ${Math.round(latestSessionAnalysis.drift.accuracyDrop * 100)}% • Response time +${Math.round(
+              latestSessionAnalysis.drift.responseTimeIncrease / 1000
+            )}s`}
+          </Text>
+          <View style={styles.signalWrap}>
+            {latestSessionAnalysis.signals.map((signal) => (
+              <View key={signal} style={styles.signalPill}>
+                <Text style={styles.signalPillText}>{signal}</Text>
+              </View>
+            ))}
+          </View>
+        </Surface>
+      ) : syncError ? (
+        <Surface style={styles.resultCard}>
+          <SectionHeader title="Live backend analysis" />
+          <Text style={styles.resultSupport}>{syncError}</Text>
+        </Surface>
+      ) : null}
+
+      {gamificationStatus ? (
+        <Surface style={styles.resultCard}>
+          <SectionHeader title="Recovery progress" />
+          <View style={styles.resultMetrics}>
+            <MetricTile label="XP" support="Resilience" tone="green" value={`${gamificationStatus.xp}`} />
+            <MetricTile label="Streak" support="Study sessions" tone="blue" value={`${gamificationStatus.streak}`} />
+          </View>
+          <View style={styles.signalWrap}>
+            {gamificationStatus.badges.length ? (
+              gamificationStatus.badges.map((badge) => (
+                <View key={badge} style={styles.signalPill}>
+                  <Text style={styles.signalPillText}>{badge}</Text>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.resultSupport}>No badges yet. Keep showing up and recovering well.</Text>
+            )}
+          </View>
+        </Surface>
+      ) : null}
 
       {/* Mood correlation */}
       <Surface style={styles.resultCard}>
@@ -911,6 +977,34 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     lineHeight: 21,
     marginTop: spacing.md,
+  },
+  resultHighlight: {
+    color: palette.navy,
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: spacing.sm,
+  },
+  resultSupport: {
+    color: palette.ink,
+    lineHeight: 21,
+    marginTop: spacing.sm,
+  },
+  signalWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  signalPill: {
+    backgroundColor: palette.primaryMuted,
+    borderRadius: radii.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  signalPillText: {
+    color: palette.primary,
+    fontSize: 12,
+    fontWeight: '700',
   },
   noWeakText: {
     color: palette.primary,
